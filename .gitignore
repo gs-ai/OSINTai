@@ -1,5 +1,40 @@
-# Ignore specific directories
+__pycache__/
+*.pyc
+*.pyo
+*.DS_Store
+.venv/
+venv/
+.env
+.env.local
+.env.*.local
+data/runs/
+data/cache/
+*.log
+
+# Conda
+.conda/
+conda-env/
+env/
+ENV/
+
+# Python packaging
+*.egg-info/
+dist/
+build/
+*.whl
+
+# Testing and coverage
+.coverage
+.pytest_cache/
+.mypy_cache/
+.tox/
+
+# IDEs
+.idea/
+*.swp
+*.swo
+
+# OS
+Thumbs.db
 .DS_Store
-osintaiENV/
-SIDELINE/
-OSINTai_FILES1/
+._*
