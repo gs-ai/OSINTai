@@ -7,44 +7,44 @@
 [![Async](https://img.shields.io/badge/async-httpx-green.svg)](https://www.python-httpx.org/)
 [![AI](https://img.shields.io/badge/AI-Ollama-purple.svg)](https://ollama.ai/)
 
-## 🌟 Overview
+## Overview
 
 **OSINTai** is a cutting-edge, AI-enhanced web crawler engineered for **Open Source Intelligence (OSINT)** professionals, cybersecurity researchers, and digital investigators. Leveraging advanced asynchronous processing, intelligent proxy rotation, and state-of-the-art LLM analysis, OSINTai automates comprehensive intelligence gathering from web sources with unparalleled efficiency and accuracy.
 
 **Key Capabilities:**
-- 🚀 **High-Performance Async Crawling** with intelligent concurrency controls
-- 🧠 **AI-Powered Content Analysis** using Ollama LLMs for structured intelligence extraction
-- 🎯 **Advanced Indicator Mining** with automated entity recognition and risk assessment
-- 📊 **Graph-Based Intelligence Mapping** with ACE-T compatible export formats
-- 🛡️ **Operational Security** featuring proxy rotation, user-agent randomization, and stealth techniques
-- 🔍 **Hunt Mode** for targeted intelligence discovery with configurable search terms
-- ⚡ **Near-Duplicate Detection** using Simhash algorithms to eliminate redundant content
-- 📈 **Intelligent Scoring** and prioritization based on indicator density and risk factors
+- **High-Performance Async Crawling** with intelligent concurrency controls
+- **AI-Powered Content Analysis** using Ollama LLMs for structured intelligence extraction
+- **Advanced Indicator Mining** with automated entity recognition and risk assessment
+- **Graph-Based Intelligence Mapping** with ACE-T compatible export formats
+- **Operational Security** featuring proxy rotation, user-agent randomization, and stealth techniques
+- **Hunt Mode** for targeted intelligence discovery with configurable search terms
+- **Near-Duplicate Detection** using Simhash algorithms to eliminate redundant content
+- **Intelligent Scoring** and prioritization based on indicator density and risk factors
 
 ---
 
-## ✨ Key Features
+## Key Features
 
-### 🚀 Performance & Scalability
+### Performance & Scalability
 - **Asynchronous Architecture**: Concurrent processing with configurable global (18) and per-host (4) concurrency limits
 - **Intelligent Proxy Management**: Health-scored proxy rotation with automatic failover and performance tracking
 - **Adaptive Throttling**: Per-host rate limiting prevents site overwhelming while maximizing throughput
 - **Resume Capability**: Automatic checkpointing and state persistence for interrupted operations
 - **Memory Efficient**: Optimized for large-scale crawls with minimal resource overhead
 
-### 🧠 AI-Powered Intelligence
+### AI-Powered Intelligence
 - **LLM Content Analysis**: Structured intelligence extraction using Ollama models (`granite3.2:latest`)
 - **Vector Embeddings**: Semantic content embeddings for clustering and similarity analysis (`nomic-embed-text:latest`)
 - **Risk Intelligence**: Automated identification of suspicious patterns, high-risk indicators, and threat signals
 - **Contextual Analysis**: Deep content understanding with entity relationships and temporal analysis
 
-### 🎯 Advanced Intelligence Extraction
+### Advanced Intelligence Extraction
 - **Comprehensive Indicator Mining**: Extracts emails, phone numbers, cryptocurrency addresses, social media handles, domains, IP addresses, and custom patterns
 - **Hunt Mode**: Targeted crawling for specific intelligence terms with configurable lead discovery limits
 - **Content Deduplication**: Simhash-based near-duplicate detection to eliminate redundant information
 - **Intelligence Scoring**: Automated prioritization based on indicator density, risk flags, and content relevance
 
-### 📊 Intelligence Scoring Algorithm
+### Intelligence Scoring Algorithm
 
 OSINTai employs a sophisticated multi-factor scoring system that combines traditional indicator mining with AI-powered risk assessment to prioritize pages by intelligence value:
 
@@ -74,13 +74,13 @@ OSINTai employs a sophisticated multi-factor scoring system that combines tradit
 
 Pages are automatically ranked by total score, with AI-enhanced intelligence receiving the highest prioritization for OSINT analysis.
 
-### 📊 Data Export & Visualization
+### Data Export & Visualization
 - **Graph Export**: ACE-T compatible JSONL format with nodes, edges, and relationship mapping
 - **Multi-Format Reports**: Structured JSON, JSONL, and human-readable intelligence summaries
 - **Visualization Ready**: Compatible with GraphXR, Neo4j, NetworkX, and D3.js for advanced analysis
 - **Comprehensive Metadata**: Full crawl state, analysis results, timestamps, and provenance tracking
 
-### 🛡️ Operational Security & Ethics
+### Operational Security & Ethics
 - **User-Agent Rotation**: Extensive randomization pool to avoid detection and fingerprinting
 - **Proxy Anonymization**: Built-in proxy health management with automatic rotation
 - **Configurable Delays**: Adaptive timing controls to respect site policies and avoid rate limiting
@@ -89,7 +89,7 @@ Pages are automatically ranked by total score, with AI-enhanced intelligence rec
 
 ---
 
-## 📦 Installation
+## Installation
 
 ### Prerequisites
 - **Python 3.10+**
@@ -123,7 +123,7 @@ pip install beautifulsoup4 requests httpx anyio lxml
 
 ---
 
-## 🚀 Quick Start
+## Quick Start
 
 ### Basic Intelligence Gathering
 ```bash
@@ -186,7 +186,7 @@ python run_osintai.py --seed "https://example.com"  # Will also check for seed_u
 
 ---
 
-## 📋 Command Line Options
+## Command Line Options
 
 ```
 usage: run_osintai.py [-h] [--seed SEED] [--depth DEPTH] [--max MAX]
@@ -219,7 +219,7 @@ optional arguments:
 
 ---
 
-## 📁 Output Structure
+## Output Structure
 
 Each crawl generates a timestamped directory under `data/runs/` with comprehensive intelligence data:
 
@@ -268,7 +268,7 @@ data/runs/2026-01-16_143022_investigation_001/
 
 ---
 
-## ⚙️ Configuration Files
+## Configuration Files
 
 ### User Agents (`user_agents.txt`)
 **Purpose**: Request header randomization to avoid detection
@@ -293,7 +293,7 @@ https://target3.com/analysis
 
 ---
 
-## 🎯 Advanced Usage Patterns
+## Advanced Usage Patterns
 
 ### Intelligence Pipeline Workflow
 ```bash
@@ -351,7 +351,7 @@ python run_osintai.py \
 
 ---
 
-## 📊 Graph Export & Visualization
+## Graph Export & Visualization
 
 OSINTai generates ACE-T compatible graph data for advanced network analysis and visualization:
 
@@ -372,14 +372,14 @@ OSINTai generates ACE-T compatible graph data for advanced network analysis and 
 ```
 
 ### Visualization Platforms
-- **🖥️ GraphXR**: Direct JSONL import for real-time graph exploration
-- **🗄️ Neo4j**: Enterprise graph database with Cypher queries
-- **🐍 NetworkX**: Python graph analysis and algorithmic processing
-- **🌐 D3.js**: Custom web-based visualizations and dashboards
+- **GraphXR**: Direct JSONL import for real-time graph exploration
+- **Neo4j**: Enterprise graph database with Cypher queries
+- **NetworkX**: Python graph analysis and algorithmic processing
+- **D3.js**: Custom web-based visualizations and dashboards
 
 ---
 
-## ⚡ Performance Optimization
+## Performance Optimization
 
 ### Concurrency Tuning
 - **Global Concurrency**: Total simultaneous requests (recommended: 12-24)
@@ -398,7 +398,7 @@ OSINTai generates ACE-T compatible graph data for advanced network analysis and 
 
 ---
 
-## 🔧 Troubleshooting
+## Troubleshooting
 
 ### Common Issues & Solutions
 
@@ -453,7 +453,7 @@ logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %
 
 ---
 
-## 🏗️ Architecture
+## Architecture
 
 ### Core Module Structure
 ```
@@ -476,17 +476,17 @@ src/osintai/
 ```
 
 ### Data Processing Pipeline
-1. **🎯 Initialization**: Parse arguments, load configurations, initialize components
-2. **🌐 Crawling**: Async HTTP fetching with concurrency controls and proxy rotation
-3. **🔍 Processing**: Content extraction, indicator mining, deduplication
-4. **🧠 Analysis**: LLM-powered intelligence extraction and embedding generation
-5. **📊 Scoring**: Risk assessment, prioritization, and intelligence value calculation
-6. **💾 Persistence**: Structured data export and graph generation
-7. **📋 Reporting**: Human-readable summaries and visualization data
+1. **Initialization**: Parse arguments, load configurations, initialize components
+2. **Crawling**: Async HTTP fetching with concurrency controls and proxy rotation
+3. **Processing**: Content extraction, indicator mining, deduplication
+4. **Analysis**: LLM-powered intelligence extraction and embedding generation
+5. **Scoring**: Risk assessment, prioritization, and intelligence value calculation
+6. **Persistence**: Structured data export and graph generation
+7. **Reporting**: Human-readable summaries and visualization data
 
 ---
 
-## 🔒 Security & Ethics
+## Security & Ethics
 
 ### Operational Security Features
 - **Anonymization**: Proxy rotation and user-agent randomization
@@ -508,7 +508,7 @@ src/osintai/
 
 ---
 
-## 🤝 Contributing
+## Contributing
 
 ### Development Environment
 ```bash
@@ -544,13 +544,13 @@ pip install black flake8 pytest mypy
 
 ---
 
-## 📄 License
+## License
 
 **MIT License** - See [LICENSE](LICENSE) file for complete terms.
 
 ---
 
-## ⚖️ Legal Disclaimer
+## Legal Disclaimer
 
 **OSINTai** is developed exclusively for **ethical open source intelligence research** and **authorized security investigations**. This tool must not be used for unauthorized surveillance, data collection, or any illegal activities.
 
@@ -560,20 +560,20 @@ pip install black flake8 pytest mypy
 
 ---
 
-## 📈 Changelog
+## Changelog
 
 ### v3.3 FULL (2026-01-16) - Current Release
-- ✨ **Complete Async Rewrite**: httpx + asyncio for 10x+ performance gains
-- 🛡️ **Advanced Proxy System**: Health-scored rotation with intelligent failover
-- 🔍 **Simhash Deduplication**: Near-duplicate detection for content efficiency
-- 🧠 **Ollama API Integration**: Native LLM analysis and vector embeddings
-- 🎯 **Hunt Mode**: Targeted intelligence discovery with configurable parameters
-- 📊 **ACE-T Graph Export**: Professional visualization and network analysis
-- ⚡ **Performance Optimization**: Concurrent processing with memory efficiency
-- 🔄 **Resume Capability**: Automatic state persistence and crash recovery
-- 🏗️ **Modular Architecture**: Clean separation in `src/osintai/` package
-- 🧹 **Code Cleanup**: Removed legacy components and unused files
-- 📝 **Enhanced Documentation**: Comprehensive README with usage examples
+- **Complete Async Rewrite**: httpx + asyncio for 10x+ performance gains
+- **Advanced Proxy System**: Health-scored rotation with intelligent failover
+- **Simhash Deduplication**: Near-duplicate detection for content efficiency
+- **Ollama API Integration**: Native LLM analysis and vector embeddings
+- **Hunt Mode**: Targeted intelligence discovery with configurable parameters
+- **ACE-T Graph Export**: Professional visualization and network analysis
+- **Performance Optimization**: Concurrent processing with memory efficiency
+- **Resume Capability**: Automatic state persistence and crash recovery
+- **Modular Architecture**: Clean separation in `src/osintai/` package
+- **Code Cleanup**: Removed legacy components and unused files
+- **Enhanced Documentation**: Comprehensive README with usage examples
 
 ### v3.1 (Legacy - Deprecated)
 - Synchronous crawling architecture
@@ -583,16 +583,16 @@ pip install black flake8 pytest mypy
 
 ---
 
-## 📞 Support & Community
+## Support & Community
 
-- **🐛 Bug Reports**: [GitHub Issues](https://github.com/yourusername/OSINTai/issues)
-- **💡 Feature Requests**: [GitHub Discussions](https://github.com/yourusername/OSINTai/discussions)
-- **📖 Documentation**: Comprehensive in-code docstrings and this README
-- **🤝 Community**: OSINT professional forums and security research communities
+- **Bug Reports**: [GitHub Issues](https://github.com/yourusername/OSINTai/issues)
+- **Feature Requests**: [GitHub Discussions](https://github.com/yourusername/OSINTai/discussions)
+- **Documentation**: Comprehensive in-code docstrings and this README
+- **Community**: OSINT professional forums and security research communities
 
 ---
 
-## 🙏 Acknowledgments
+## Acknowledgments
 
 Built for the OSINT community with contributions from security researchers, digital investigators, and open source intelligence professionals worldwide.
 
