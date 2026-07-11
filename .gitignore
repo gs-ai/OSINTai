@@ -2,13 +2,45 @@ __pycache__/
 *.pyc
 *.pyo
 *.DS_Store
+
+# Secrets and local credentials
 .venv/
 venv/
 .env
+.env.*
+!.env.example
 .env.local
 .env.*.local
+*.env
+secrets/
+secrets.*
+*secret*
+*credentials*
+*.key
+*.pem
+*.p12
+*.pfx
+id_rsa
+id_dsa
+id_ecdsa
+id_ed25519
+*.ovpn
+
+# Local OSINT inputs/outputs may contain PII, targets, proxies, or findings
 data/runs/
 data/cache/
+cases/
+OSINTai_FILES1/
+proxies/
+proxy*.txt
+*proxy*.txt
+seed_urls.txt
+*_urls.txt
+*.har
+*.pcap
+*.pcapng
+*.sqlite
+*.db
 *.log
 
 # Conda

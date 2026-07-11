@@ -39,16 +39,30 @@ class AsyncFetcher:
         for _ in range(self.retries + 1):
             proxy_url = self.proxy_pool.pick() if self.proxy_pool and self.proxy_pool.has_proxies() else None
 
-            # For now, skip proxy support in this test
             try:
-                resp = await client.get(
-                    url,
-                    headers=self._headers(),
-                    follow_redirects=True
-                )
+                request_kwargs = {"headers": self._headers()}
+                if proxy_url:
+                    # httpx 0.28 configures proxies at client construction time.
+                    async with httpx.AsyncClient(
+                        proxy=proxy_url,
+                        timeout=self.timeout_s,
+                        follow_redirects=True,
+                    ) as proxy_client:
+                        resp = await proxy_client.get(url, **request_kwargs)
+                else:
+                    resp = await client.get(
+                        url,
+                        timeout=self.timeout_s,
+                        follow_redirects=True,
+                        **request_kwargs,
+                    )
+                if self.proxy_pool:
+                    self.proxy_pool.mark_ok(proxy_url)
                 return resp
             except Exception as e:
                 last_exc = e
+                if self.proxy_pool:
+                    self.proxy_pool.mark_fail(proxy_url)
                 await asyncio.sleep(0.25 + random.uniform(0.1, 0.4))
 
         raise last_exc

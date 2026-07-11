@@ -27,7 +27,7 @@ def _read_jsonl(path: str):
     return rows
 
 def main():
-    ap = argparse.ArgumentParser(description="OSINTai v3.2 FULL (async + proxy + dedupe + embeddings + hunt + graph export)")
+    ap = argparse.ArgumentParser(description="OSINTai v3.4 FULL (async + proxy + dedupe + embeddings + hunt + graph export)")
     ap.add_argument("--seed", help="Seed URL (or use seed_urls.txt file)")
     ap.add_argument("--depth", type=int, default=2, help="Max depth")
     ap.add_argument("--max", type=int, default=150, help="Max URLs")
@@ -39,8 +39,8 @@ def main():
     ap.add_argument("--ua", default="user_agents.txt", help="User agents file")
     ap.add_argument("--proxies", default="", help="Optional proxy list file")
 
-    ap.add_argument("--model", default="granite3.2:latest", help="Ollama analyze model")
-    ap.add_argument("--embed-model", default="nomic-embed-text:latest", help="Ollama embeddings model")
+    ap.add_argument("--model", default="osint-tuned-v3:latest", help="Ollama analyze model")
+    ap.add_argument("--embed-model", default="bge-m3:latest", help="Ollama embeddings model")
     ap.add_argument("--no-ollama", action="store_true", help="Disable LLM analysis and embeddings")
 
     ap.add_argument("--hunt", default="", help="Comma-separated hunt terms")
@@ -113,7 +113,7 @@ def main():
 
     print("")
     print("=" * 80)
-    print("OSINTai v3.2 FULL")
+    print("OSINTai v3.4 FULL")
     print(f"RUN DIR: {run_dir}")
     print(f"SEEDS: {len(seed_urls)} URL(s)")
     if len(seed_urls) == 1:

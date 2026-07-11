@@ -21,6 +21,7 @@ def export_graph(run_dir: str, pages: List[Dict[str, Any]], indicators_by_url: D
     Nodes:
       - page
       - domain
+      - ip
       - email
       - phone
       - crypto
@@ -73,6 +74,12 @@ def export_graph(run_dir: str, pages: List[Dict[str, Any]], indicators_by_url: D
             did = "domain:" + d
             ensure_node(did, "domain", d, {})
             link(page_id, did, "mentions_domain", {})
+
+        # IP addresses
+        for ip in ind.get("ip_addresses", [])[:200]:
+            iid = "ip:" + ip
+            ensure_node(iid, "ip", ip, {})
+            link(page_id, iid, "mentions_ip", {})
 
         # emails
         for e in ind.get("emails", [])[:200]:

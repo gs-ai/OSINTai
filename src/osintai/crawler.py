@@ -2,8 +2,9 @@ import os
 import json
 import time
 import asyncio
+from collections import deque
 from dataclasses import dataclass, asdict
-from typing import Dict, List, Tuple, Set, Optional
+from typing import Deque, Dict, List, Tuple, Set
 from urllib.parse import urlparse
 
 import httpx
@@ -12,7 +13,6 @@ from .normalize import clean_url, same_domain
 from .storage import sha1, safe_mkdir, append_jsonl, read_json, write_json
 from .extractor import Extractor
 from .fetcher import AsyncFetcher
-from .proxy_pool import ProxyPool
 from .ollama_api import OllamaAPI
 from .dedupe import sha1_text, simhash_64, hamming64
 from .analyzer import compute_page_signal
@@ -98,7 +98,9 @@ class AsyncCrawler:
         self.proxy_state = os.path.join(run_dir, "proxy_pool.json")
 
         self.visited: Set[str] = set()
-        self.queue: List[Tuple[str, int]] = [(url, 0) for url in seed_urls]
+        self.queue: Deque[Tuple[str, int]] = deque()
+        self.queued: Set[str] = set()
+        self.in_progress: Set[str] = set()
         self.indicators_by_url: Dict[str, Dict] = {}
         self.pages_scored: List[Dict] = []
 
@@ -107,25 +109,40 @@ class AsyncCrawler:
 
         # host semaphores
         self.host_sema: Dict[str, asyncio.Semaphore] = {}
+        self.ollama_sema = asyncio.Semaphore(max(1, min(2, self.concurrency)))
 
         self.ollama = OllamaAPI() if self.use_ollama else None
+        for url in seed_urls:
+            self._enqueue(url, 0)
 
         if self.resume:
             self._load_state()
 
     def _load_state(self):
         st = read_json(self.state_path, default=None)
-        if st:
-            self.visited = set(st.get("visited", []))
-            self.queue = [tuple(x) for x in st.get("queue", [])]
-            self.simhash_seen = st.get("simhash_seen", [])[:5000]
-            if not self.queue:
-                self.queue = [(self.seed_url, 0)]
+        if not st:
+            return
+
+        self.visited = set(st.get("visited", []))
+        self.queue.clear()
+        self.queued.clear()
+        self.in_progress.clear()
+        self.simhash_seen = st.get("simhash_seen", [])[:5000]
+
+        for item in st.get("queue", []):
+            if not isinstance(item, (list, tuple)) or len(item) != 2:
+                continue
+            url, depth = item
+            self._enqueue(url, int(depth))
+
+        if not self.queue:
+            for url in self.seed_urls:
+                self._enqueue(url, 0)
 
     def _save_state(self):
         write_json(self.state_path, {
             "visited": sorted(self.visited),
-            "queue": self.queue[:20000],
+            "queue": list(self.queue)[:20000],
             "simhash_seen": self.simhash_seen[:5000]
         })
 
@@ -135,6 +152,18 @@ class AsyncCrawler:
                 write_json(self.proxy_state, self.fetcher.proxy_pool.as_dict())
             except:
                 pass
+
+    def _enqueue(self, url: str, depth: int) -> bool:
+        url = clean_url(url)
+        if not url or depth > self.max_depth:
+            return False
+        if url in self.visited or url in self.queued or url in self.in_progress:
+            return False
+        if not self._scoped(url):
+            return False
+        self.queue.append((url, depth))
+        self.queued.add(url)
+        return True
 
     def _host_lock(self, url: str) -> asyncio.Semaphore:
         h = host_of(url)
@@ -225,9 +254,7 @@ CONTENT:
 
         out_links = self.extractor.extract_links(url, html)
         for lk in out_links:
-            lk = clean_url(lk)
-            if lk and lk not in self.visited and self._scoped(lk):
-                self.queue.append((lk, depth + 1))
+            self._enqueue(lk, depth + 1)
 
         rid = sha1(url)
         raw_path = os.path.join(self.raw_dir, f"{rid}.html")
@@ -260,7 +287,8 @@ CONTENT:
         if self.use_ollama and self.ollama and len(text) > 250:
             prompt = self._analysis_prompt(url, title, text)
             try:
-                analysis = self.ollama.generate_json(self.model_analyze, prompt, timeout_s=140.0)
+                async with self.ollama_sema:
+                    analysis = await self.ollama.async_generate_json(self.model_analyze, prompt, timeout_s=140.0)
             except Exception as e:
                 analysis = {"url": url, "title": title, "error": "ollama_generate_failed", "exception": str(e)}
 
@@ -271,7 +299,8 @@ CONTENT:
         # embeddings (for clustering later)
         if self.use_ollama and self.ollama and len(text) > 250:
             try:
-                vec = self.ollama.embed(self.model_embed, (title + "\n" + text)[:5000], timeout_s=60.0)
+                async with self.ollama_sema:
+                    vec = await self.ollama.async_embed(self.model_embed, (title + "\n" + text)[:5000], timeout_s=60.0)
                 if vec:
                     out_vec = os.path.join(self.embed_dir, f"{rid}.embed.json")
                     with open(out_vec, "w", encoding="utf-8") as f:
@@ -284,9 +313,7 @@ CONTENT:
         if hunt.get("hits") or hunt.get("lead_urls"):
             append_jsonl(self.hunt_jsonl, {"url": url, "depth": depth, **hunt})
             for u in hunt.get("lead_urls", [])[: self.hunt_max_leads]:
-                u2 = clean_url(u)
-                if u2 and u2 not in self.visited and self._scoped(u2):
-                    self.queue.append((u2, depth + 1))
+                self._enqueue(u, depth + 1)
 
         score = compute_page_signal(indicators, analysis if isinstance(analysis, dict) else {})
         scored = {
@@ -315,21 +342,27 @@ CONTENT:
                 batch = []
                 # Pull a batch
                 while self.queue and len(batch) < (self.concurrency * 2) and len(self.visited) + len(batch) < self.max_urls:
-                    u, d = self.queue.pop(0)
+                    u, d = self.queue.popleft()
+                    self.queued.discard(u)
                     u = clean_url(u)
-                    if not u or u in self.visited:
+                    if not u or u in self.visited or u in self.in_progress:
                         continue
                     if d > self.max_depth:
                         continue
                     if not self._scoped(u):
                         continue
+                    self.in_progress.add(u)
                     batch.append((u, d))
 
                 if not batch:
                     await asyncio.sleep(0.05)
                     continue
 
-                await asyncio.gather(*[worker(u, d) for (u, d) in batch])
+                try:
+                    await asyncio.gather(*[worker(u, d) for (u, d) in batch])
+                finally:
+                    for u, _ in batch:
+                        self.in_progress.discard(u)
 
                 # checkpoint
                 self._save_state()
@@ -344,114 +377,4 @@ CONTENT:
             "hunt_jsonl": self.hunt_jsonl,
             "graph_nodes": os.path.join(self.run_dir, "graph_nodes.jsonl"),
             "graph_edges": os.path.join(self.run_dir, "graph_edges.jsonl"),
-        }
-        self.queue: List[Tuple[str, int]] = [(seed_url, 0)]
-
-        if resume:
-            self._load_state()
-
-    def _load_state(self):
-        st = read_json(self.state_path, default=None)
-        if not st:
-            return
-        self.visited = set(st.get("visited", []))
-        self.queue = [tuple(x) for x in st.get("queue", [])]
-        if not self.queue:
-            self.queue = [(self.seed_url, 0)]
-
-    def _save_state(self):
-        write_json(self.state_path, {"visited": sorted(self.visited), "queue": self.queue})
-
-    def crawl_sync(self):
-        while self.queue and len(self.visited) < self.max_urls:
-            url, depth = self.queue.pop(0)
-            url = clean_url(url)
-            if not url:
-                continue
-
-            if url in self.visited:
-                continue
-            if depth > self.max_depth:
-                continue
-
-            if self.same_domain_only and not same_domain(url, self.primary_seed):
-                continue
-
-            try:
-                resp = self.fetcher.get(url)
-                status = resp.status_code
-
-                if status != 200 or not is_probably_html(resp):
-                    self.visited.add(url)
-                    print(f"[SKIP] {status} {url}")
-                    self._save_state()
-                    continue
-
-                html = resp.text
-                title, text = self.extractor.html_to_text(html)
-
-                out_links = self.extractor.extract_links(url, html)
-                for lk in out_links:
-                    if lk not in self.visited:
-                        self.queue.append((lk, depth + 1))
-
-                rid = sha1(url)
-                raw_path = os.path.join(self.raw_dir, f"{rid}.html")
-                text_path = os.path.join(self.text_dir, f"{rid}.txt")
-
-                with open(raw_path, "w", encoding="utf-8", errors="ignore") as f:
-                    f.write(html)
-                with open(text_path, "w", encoding="utf-8", errors="ignore") as f:
-                    f.write(text)
-
-                page = PageRecord(
-                    url=url,
-                    status_code=status,
-                    fetched_at=time.time(),
-                    content_sha1=sha1(html),
-                    title=title[:200],
-                    text_len=len(text),
-                    out_links_count=len(out_links),
-                    saved_raw_path=raw_path,
-                    saved_text_path=text_path
-                )
-
-                append_jsonl(self.urls_jsonl, asdict(page))
-                self.visited.add(url)
-
-                indicators = self.extractor.extract_indicators(url, text, html)
-                append_jsonl(self.indicators_jsonl, indicators)
-
-                analysis = {}
-                if self.ollama and len(text) > 200:
-                    analysis = self.ollama.analyze(url, title, text)
-                    out_json = os.path.join(self.analysis_dir, f"{rid}.analysis.json")
-                    with open(out_json, "w", encoding="utf-8") as f:
-                        import json
-                        json.dump(analysis, f, ensure_ascii=False, indent=2)
-
-                score = compute_page_signal(indicators, analysis if isinstance(analysis, dict) else {})
-                scored = {
-                    "url": url,
-                    "title": page.title,
-                    "score": score,
-                    "summary": analysis.get("summary") if isinstance(analysis, dict) else "",
-                    "risk_flags": analysis.get("risk_flags") if isinstance(analysis, dict) else []
-                }
-                append_jsonl(self.page_scores_path, scored)
-
-                print(f"[OK] depth={depth:02d} links={len(out_links):03d} score={score:05.2f} text={len(text):05d}  {url}")
-                self._save_state()
-
-            except Exception as e:
-                print(f"[FAIL] {url}  -> {e}")
-                self._save_state()
-
-        return {
-            "urls_jsonl": self.urls_jsonl,
-            "indicators_jsonl": self.indicators_jsonl,
-            "page_scores_jsonl": self.page_scores_jsonl,
-            "hunt_jsonl": self.hunt_jsonl,
-            "graph_nodes": os.path.join(self.run_dir, "graph_nodes.jsonl"),
-            "graph_edges": os.path.join(self.run_dir, "graph_edges.jsonl")
         }

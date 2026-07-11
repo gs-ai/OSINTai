@@ -1,6 +1,6 @@
 <img src="bd800949-d4d1-44ce-849e-ba40837590bc.png" alt="OSINTai Logo" width="100%">
 
-# OSINTai v3.3 - Advanced AI-Powered OSINT Web Crawler
+# OSINTai v3.4 - Advanced AI-Powered OSINT Web Crawler
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
@@ -14,11 +14,11 @@
 **Key Capabilities:**
 - **High-Performance Async Crawling** with intelligent concurrency controls
 - **AI-Powered Content Analysis** using Ollama LLMs for structured intelligence extraction
-- **Advanced Indicator Mining** with automated entity recognition and risk assessment
+- **Advanced Indicator Mining** for emails, phones, domains, IPs, URLs, crypto addresses, and social handles
 - **Graph-Based Intelligence Mapping** with ACE-T compatible export formats
 - **Operational Security** featuring proxy rotation, user-agent randomization, and stealth techniques
 - **Hunt Mode** for targeted intelligence discovery with configurable search terms
-- **Near-Duplicate Detection** using Simhash algorithms to eliminate redundant content
+- **Near-Duplicate Detection** using weighted Simhash algorithms to eliminate redundant content
 - **Intelligent Scoring** and prioritization based on indicator density and risk factors
 
 ---
@@ -27,21 +27,22 @@
 
 ### Performance & Scalability
 - **Asynchronous Architecture**: Concurrent processing with configurable global (18) and per-host (4) concurrency limits
-- **Intelligent Proxy Management**: Health-scored proxy rotation with automatic failover and performance tracking
+- **Efficient Crawl Scheduler**: O(1) queue operations with duplicate suppression for visited, queued, and in-flight URLs
+- **Intelligent Proxy Management**: Health-scored proxy rotation with automatic failover, retry tracking, and proxy-state persistence
 - **Adaptive Throttling**: Per-host rate limiting prevents site overwhelming while maximizing throughput
 - **Resume Capability**: Automatic checkpointing and state persistence for interrupted operations
 - **Memory Efficient**: Optimized for large-scale crawls with minimal resource overhead
 
 ### AI-Powered Intelligence
-- **LLM Content Analysis**: Structured intelligence extraction using Ollama models (`granite3.2:latest`)
-- **Vector Embeddings**: Semantic content embeddings for clustering and similarity analysis (`nomic-embed-text:latest`)
+- **LLM Content Analysis**: Nonblocking structured intelligence extraction using Ollama models (`osint-tuned-v3:latest`)
+- **Vector Embeddings**: Bounded async semantic content embeddings for clustering and similarity analysis (`bge-m3:latest`)
 - **Risk Intelligence**: Automated identification of suspicious patterns, high-risk indicators, and threat signals
 - **Contextual Analysis**: Deep content understanding with entity relationships and temporal analysis
 
 ### Advanced Intelligence Extraction
-- **Comprehensive Indicator Mining**: Extracts emails, phone numbers, cryptocurrency addresses, social media handles, domains, IP addresses, and custom patterns
+- **Comprehensive Indicator Mining**: Extracts emails, phone numbers, URLs, domains, IPv4 addresses, BTC addresses, ETH addresses, and social media handles
 - **Hunt Mode**: Targeted crawling for specific intelligence terms with configurable lead discovery limits
-- **Content Deduplication**: Simhash-based near-duplicate detection to eliminate redundant information
+- **Content Deduplication**: Weighted Simhash near-duplicate detection to eliminate redundant information while preserving distinct leads
 - **Intelligence Scoring**: Automated prioritization based on indicator density, risk flags, and content relevance
 
 ### Intelligence Scoring Algorithm
@@ -75,7 +76,7 @@ OSINTai employs a sophisticated multi-factor scoring system that combines tradit
 Pages are automatically ranked by total score, with AI-enhanced intelligence receiving the highest prioritization for OSINT analysis.
 
 ### Data Export & Visualization
-- **Graph Export**: ACE-T compatible JSONL format with nodes, edges, and relationship mapping
+- **Graph Export**: ACE-T compatible JSONL format with page, domain, IP, email, phone, crypto, and handle nodes
 - **Multi-Format Reports**: Structured JSON, JSONL, and human-readable intelligence summaries
 - **Visualization Ready**: Compatible with GraphXR, Neo4j, NetworkX, and D3.js for advanced analysis
 - **Comprehensive Metadata**: Full crawl state, analysis results, timestamps, and provenance tracking
@@ -104,13 +105,13 @@ git clone https://github.com/yourusername/OSINTai.git
 cd OSINTai
 
 # 2. Create conda environment
-conda create -n osintai python=3.10 beautifulsoup4 requests httpx anyio lxml -y
+conda create -n osintai python=3.10 beautifulsoup4 httpx anyio lxml -y
 conda activate osintai
 
 # 3. Install Ollama (for AI features)
 brew install ollama
-ollama pull granite3.2:latest
-ollama pull nomic-embed-text:latest
+ollama pull osint-tuned-v3:latest
+ollama pull bge-m3:latest
 
 # 4. Verify installation
 python run_osintai.py --help
@@ -118,14 +119,30 @@ python run_osintai.py --help
 
 ### Alternative Installation (pip)
 ```bash
-pip install beautifulsoup4 requests httpx anyio lxml
+pip install beautifulsoup4 httpx anyio lxml
 ```
 
 ---
 
 ## Quick Start
 
-### Basic Intelligence Gathering
+### Activate Environment
+```bash
+cd ~/Desktop/Projects/OSINTai
+conda activate osintai
+```
+
+### Fast Basic Crawl, No AI
+```bash
+python run_osintai.py \
+  --seed "https://example.com" \
+  --depth 2 \
+  --max 150 \
+  --same-domain \
+  --no-ollama
+```
+
+### Recommended OSINT Crawl
 ```bash
 python run_osintai.py \
   --seed "https://example.com" \
@@ -134,41 +151,61 @@ python run_osintai.py \
   --same-domain
 ```
 
-### AI-Enhanced Analysis
+Default Ollama models:
+```text
+Analysis:   osint-tuned-v3:latest
+Embeddings: bge-m3:latest
+```
+
+### Deeper Investigation
 ```bash
 python run_osintai.py \
   --seed "https://target-site.com" \
-  --model "granite3.2:latest" \
-  --embed-model "nomic-embed-text:latest" \
-  --concurrency 12
+  --depth 3 \
+  --max 300 \
+  --same-domain \
+  --concurrency 10 \
+  --per-host 3 \
+  --run-id "target_investigation_001"
 ```
 
 ### Targeted Hunt Mode
 ```bash
 python run_osintai.py \
-  --seed "https://investigation-target.com" \
-  --hunt "invoice,wire transfer,bank,crypto,telegram,darkweb" \
-  --hunt-max 60 \
-  --depth 3
+  --seed "https://target-site.com" \
+  --hunt "breach,credential,telegram,crypto,invoice,wire transfer,malware" \
+  --hunt-max 75 \
+  --depth 3 \
+  --max 300 \
+  --same-domain
 ```
 
-### High-Speed Crawling (No AI)
+### Large But Controlled Crawl
 ```bash
 python run_osintai.py \
-  --seed "https://large-site.com" \
-  --no-ollama \
+  --seed "https://target-site.com" \
+  --depth 4 \
   --max 1000 \
-  --concurrency 32 \
-  --per-host 6
+  --same-domain \
+  --concurrency 18 \
+  --per-host 4
 ```
 
-### Proxy-Enhanced Operations
+### With Proxies
 ```bash
 python run_osintai.py \
-  --seed "https://target.com" \
+  --seed "https://target-site.com" \
   --proxies "proxies.txt" \
+  --depth 3 \
+  --max 300 \
+  --same-domain \
   --concurrency 8 \
   --per-host 2
+```
+
+### Check Help
+```bash
+python run_osintai.py --help
 ```
 
 ### Multi-Seed URL Crawling
@@ -196,7 +233,7 @@ usage: run_osintai.py [-h] [--seed SEED] [--depth DEPTH] [--max MAX]
                       [--no-ollama] [--hunt HUNT] [--hunt-max HUNT_MAX]
                       [--run-id RUN_ID]
 
-OSINTai v3.3 FULL (async + proxy + dedupe + embeddings + hunt + graph export)
+OSINTai v3.4 FULL (async + proxy + dedupe + embeddings + hunt + graph export)
 
 required arguments:
   --seed SEED           Seed URL (or use seed_urls.txt file)
@@ -209,8 +246,8 @@ optional arguments:
   --per-host PER_HOST   Per-host concurrency limit (default: 4)
   --ua UA              User agents file (default: user_agents.txt)
   --proxies PROXIES    Optional proxy list file
-  --model MODEL        Ollama analysis model (default: granite3.2:latest)
-  --embed-model EMBED_MODEL  Ollama embeddings model (default: nomic-embed-text:latest)
+  --model MODEL        Ollama analysis model (default: osint-tuned-v3:latest)
+  --embed-model EMBED_MODEL  Ollama embeddings model (default: bge-m3:latest)
   --no-ollama          Disable LLM analysis and embeddings
   --hunt HUNT          Comma-separated hunt terms (optional)
   --hunt-max HUNT_MAX  Max lead URLs per page from hunt mode (default: 50)
@@ -225,9 +262,9 @@ Each crawl generates a timestamped directory under `data/runs/` with comprehensi
 
 ### Core Intelligence Data
 - **`urls_crawled.jsonl`** - Complete crawl log with HTTP status, timestamps, and metadata
-- **`indicators.jsonl`** - Extracted intelligence indicators with context and confidence scores
+- **`indicators.jsonl`** - Extracted emails, phones, URLs, domains, IPs, crypto addresses, and social handles
 - **`page_scores.jsonl`** - Intelligence-scored pages with analysis results and risk assessments
-- **`crawl_state.json`** - Resume state for interrupted operations
+- **`crawl_state.json`** - Resume state with visited URLs, pending queue, and Simhash history
 
 ### AI Analysis Results (when enabled)
 - **`analysis/`** - Individual page intelligence analysis in JSON format
@@ -308,7 +345,7 @@ python run_osintai.py \
 python run_osintai.py \
   --seed "https://target.com" \
   --max 100 \
-  --model "granite3.2:latest" \
+  --model "osint-tuned-v3:latest" \
   --concurrency 8
 
 # Phase 3: Targeted Intelligence Hunt
@@ -357,18 +394,20 @@ OSINTai generates ACE-T compatible graph data for advanced network analysis and 
 
 ### Node Types
 - **Pages**: Web pages with intelligence scores and metadata
-- **Indicators**: Extracted entities (emails, domains, IPs, etc.)
-- **Relationships**: Connections between entities and content
+- **Indicators**: Extracted entities including domains, IPs, emails, phones, BTC/ETH addresses, and social handles
+- **Relationships**: Page-to-indicator relationships such as `mentions_domain`, `mentions_ip`, `mentions_email`, and `mentions_handle`
 
 ### Sample Node Format
 ```json
 {"id": "page:https://example.com/intel", "type": "page", "label": "Intelligence Page", "props": {"title": "Secret Intel", "score": 25.7, "risk_flags": ["suspicious"]}, "ts": 1705411200.0}
 {"id": "email:investigator@agency.gov", "type": "email", "label": "investigator@agency.gov", "props": {"confidence": 0.95}, "ts": 1705411200.0}
+{"id": "ip:203.0.113.10", "type": "ip", "label": "203.0.113.10", "props": {}, "ts": 1705411200.0}
 ```
 
 ### Sample Edge Format
 ```json
 {"src": "page:https://example.com/intel", "dst": "email:investigator@agency.gov", "type": "mentions_email", "props": {"context": "contact information"}, "ts": 1705411200.0}
+{"src": "page:https://example.com/intel", "dst": "ip:203.0.113.10", "type": "mentions_ip", "props": {}, "ts": 1705411200.0}
 ```
 
 ### Visualization Platforms
@@ -384,16 +423,17 @@ OSINTai generates ACE-T compatible graph data for advanced network analysis and 
 ### Concurrency Tuning
 - **Global Concurrency**: Total simultaneous requests (recommended: 12-24)
 - **Per-Host Concurrency**: Domain-specific limits (recommended: 3-6)
+- **Queue Efficiency**: The crawler uses O(1) dequeue operations and suppresses duplicate pending URLs
 - **Memory Scaling**: Reduce concurrency for large crawls (>1000 URLs)
 
 ### Network Optimization
-- **Proxy Distribution**: Spread load across multiple IP addresses
+- **Proxy Distribution**: Spread load across multiple IP addresses with per-proxy success/failure scoring
 - **Delay Configuration**: Adjust timing based on target site sensitivity
 - **Timeout Management**: Increase for slow networks or international targets
 
 ### AI Performance
-- **Model Selection**: Balance accuracy vs speed (`granite3.2:latest` recommended)
-- **Batch Processing**: AI analysis scales with available Ollama resources
+- **Model Selection**: Balance accuracy vs speed (`osint-tuned-v3:latest` recommended)
+- **Bounded Async AI Work**: Ollama analysis and embeddings run asynchronously without blocking HTTP crawling
 - **Embedding Optimization**: Vector storage requires ~700KB per analyzed page
 
 ---
@@ -409,7 +449,7 @@ ollama serve
 ollama list
 
 # Test model availability
-ollama run granite3.2:latest "test"
+ollama run osint-tuned-v3:latest "test"
 
 # Fallback to non-AI mode
 python run_osintai.py --seed "https://example.com" --no-ollama
@@ -463,7 +503,7 @@ src/osintai/
 ├── fetcher.py          # HTTP client with proxy rotation and retry logic
 ├── extractor.py        # Content parsing and indicator extraction
 ├── analyzer.py         # Intelligence scoring and risk assessment
-├── ollama_api.py       # LLM integration for analysis and embeddings
+├── ollama_api.py       # Async LLM integration for analysis and embeddings
 ├── proxy_pool.py       # Proxy health management and rotation
 ├── graph_export.py     # Graph data serialization and export
 ├── hunt.py             # Targeted term discovery and lead generation
@@ -477,12 +517,13 @@ src/osintai/
 
 ### Data Processing Pipeline
 1. **Initialization**: Parse arguments, load configurations, initialize components
-2. **Crawling**: Async HTTP fetching with concurrency controls and proxy rotation
-3. **Processing**: Content extraction, indicator mining, deduplication
-4. **Analysis**: LLM-powered intelligence extraction and embedding generation
-5. **Scoring**: Risk assessment, prioritization, and intelligence value calculation
-6. **Persistence**: Structured data export and graph generation
-7. **Reporting**: Human-readable summaries and visualization data
+2. **Scheduling**: Normalize and enqueue URLs with duplicate suppression across queued, active, and visited states
+3. **Crawling**: Async HTTP fetching with concurrency controls, per-host limits, retries, and proxy rotation
+4. **Processing**: Content extraction, indicator mining, and weighted Simhash deduplication
+5. **Analysis**: Nonblocking LLM-powered intelligence extraction and embedding generation
+6. **Scoring**: Risk assessment, prioritization, and intelligence value calculation
+7. **Persistence**: Structured data export and graph generation
+8. **Reporting**: Human-readable summaries and visualization data
 
 ---
 
@@ -562,18 +603,22 @@ pip install black flake8 pytest mypy
 
 ## Changelog
 
-### v3.3 FULL (2026-01-16) - Current Release
-- **Complete Async Rewrite**: httpx + asyncio for 10x+ performance gains
-- **Advanced Proxy System**: Health-scored rotation with intelligent failover
-- **Simhash Deduplication**: Near-duplicate detection for content efficiency
-- **Ollama API Integration**: Native LLM analysis and vector embeddings
+### v3.4 FULL (2026-07-11) - Current Release
+- **Efficient Crawl Scheduling**: O(1) queue operations with duplicate suppression across queued, active, and visited URLs
+- **Robust Resume State**: Restores pending work, visited URLs, and Simhash history without losing multi-seed context
+- **Active Proxy Rotation**: Proxies are applied to outbound requests with per-proxy success/failure scoring and persisted health state
+- **Weighted Simhash Deduplication**: Higher-fidelity near-duplicate detection for repeated page templates and mirrored content
+- **Async Ollama Integration**: LLM analysis and embeddings run through nonblocking HTTP calls with bounded concurrency
+- **Expanded Indicator Mining**: Extracts domains, IP addresses, URLs, emails, phones, BTC/ETH addresses, and social handles
+- **Richer Graph Intelligence**: Exports page-to-domain, page-to-IP, page-to-email, page-to-phone, page-to-crypto, and page-to-handle relationships
 - **Hunt Mode**: Targeted intelligence discovery with configurable parameters
+
+### v3.3 FULL (2026-01-16)
+- **Complete Async Rewrite**: httpx + asyncio for high-throughput crawling
+- **Ollama API Integration**: Native LLM analysis and vector embeddings
 - **ACE-T Graph Export**: Professional visualization and network analysis
-- **Performance Optimization**: Concurrent processing with memory efficiency
 - **Resume Capability**: Automatic state persistence and crash recovery
 - **Modular Architecture**: Clean separation in `src/osintai/` package
-- **Code Cleanup**: Removed legacy components and unused files
-- **Enhanced Documentation**: Comprehensive README with usage examples
 
 ### v3.1 (Legacy - Deprecated)
 - Synchronous crawling architecture
@@ -600,4 +645,4 @@ Built for the OSINT community with contributions from security researchers, digi
 
 ---
 
-*OSINTai v3.3 - Illuminating the shadows of open source intelligence.*
+*OSINTai v3.4 - Illuminating the shadows of open source intelligence.*
