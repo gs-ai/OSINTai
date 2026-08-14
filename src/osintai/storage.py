@@ -1,6 +1,7 @@
 import os
 import json
 import hashlib
+import tempfile
 from datetime import datetime
 
 def safe_mkdir(path: str):
@@ -19,8 +20,8 @@ def load_lines(path: str) -> list[str]:
         return [line.strip() for line in f if line.strip()]
 
 def sha1(text: str) -> str:
-    """Compute SHA1 hash of text."""
-    return hashlib.sha1(text.encode("utf-8")).hexdigest()
+    """Compute a stable legacy artifact ID; never used for security."""
+    return hashlib.sha1(text.encode("utf-8"), usedforsecurity=False).hexdigest()
 
 def append_jsonl(path: str, data: dict):
     """Append a JSON object as a line to a file."""
@@ -31,10 +32,31 @@ def read_json(path: str, default=None) -> dict:
     """Read JSON from file."""
     if not os.path.exists(path):
         return default if default is not None else {}
-    with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError, TypeError):
+        return default if default is not None else {}
 
 def write_json(path: str, data: dict):
-    """Write JSON to file."""
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
+    """Write JSON atomically so an interrupted checkpoint cannot corrupt prior state."""
+    parent = os.path.dirname(os.path.abspath(path))
+    safe_mkdir(parent)
+    temp_path = ""
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=parent,
+            prefix=f".{os.path.basename(path)}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temp_path = handle.name
+            json.dump(data, handle, indent=2, ensure_ascii=False)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_path, path)
+    finally:
+        if temp_path and os.path.exists(temp_path):
+            os.unlink(temp_path)

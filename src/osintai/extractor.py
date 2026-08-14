@@ -3,6 +3,21 @@ from bs4 import BeautifulSoup
 from urllib.parse import urlparse
 from .normalize import absolutize
 
+
+def _validated_http_url(value: str) -> tuple[str, str] | None:
+    """Return a cleaned URL and hostname, or None for malformed regex matches."""
+    candidate = value.rstrip(".,;:!?)}")
+    try:
+        parsed = urlparse(candidate)
+        hostname = parsed.hostname
+    except ValueError:
+        # urllib raises for malformed bracketed IPv6-like strings.
+        return None
+    if parsed.scheme not in {"http", "https"} or not hostname:
+        return None
+    return candidate, hostname.lower()
+
+
 class Extractor:
     EMAIL_RE = re.compile(r"\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b")
     PHONE_RE = re.compile(r"\b\d{3}[-.]?\d{3}[-.]?\d{4}\b")
@@ -46,19 +61,22 @@ class Extractor:
         combined = "\n".join([text or "", html or ""])
         emails = sorted(set(self.EMAIL_RE.findall(combined)))[:200]
         phones = sorted(set(self.PHONE_RE.findall(combined)))[:100]
-        urls = sorted(set(self.URL_RE.findall(combined)))[:100]
+        parsed_urls = {
+            parsed
+            for match in self.URL_RE.findall(combined)
+            if (parsed := _validated_http_url(match)) is not None
+        }
+        urls = sorted(url for url, _ in parsed_urls)[:100]
         btc_addresses = sorted(set(self.BTC_RE.findall(combined)))[:100]
         eth_addresses = sorted({addr.lower() for addr in self.ETH_RE.findall(combined)})[:100]
         social_handles = sorted(set(self.SOCIAL_RE.findall(combined)))[:100]
         ip_addresses = sorted(set(self.IP_RE.findall(combined)))[:100]
 
-        domain = urlparse(url).netloc
+        source = _validated_http_url(url)
+        domain = source[1] if source else ""
         domains = {domain} if domain else set()
         domains.update(self.DOMAIN_RE.findall(combined))
-        for extracted_url in urls:
-            parsed = urlparse(extracted_url)
-            if parsed.netloc:
-                domains.add(parsed.netloc.lower())
+        domains.update(hostname for _, hostname in parsed_urls)
 
         # Drop email-only host fragments that appear solely because of address parsing noise.
         email_domains = {email.rsplit("@", 1)[-1].lower() for email in emails if "@" in email}

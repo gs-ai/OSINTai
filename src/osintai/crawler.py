@@ -9,15 +9,16 @@ from urllib.parse import urlparse
 
 import httpx
 
-from .normalize import clean_url, same_domain
+from .normalize import clean_url
 from .storage import sha1, safe_mkdir, append_jsonl, read_json, write_json
 from .extractor import Extractor
-from .fetcher import AsyncFetcher
+from .fetcher import AsyncFetcher, FetchRejected
 from .ollama_api import OllamaAPI
 from .dedupe import sha1_text, simhash_64, hamming64
 from .analyzer import compute_page_signal
 from .hunt import hunt_leads
 from .graph_export import export_graph
+from .prompts import STANDARD, page_prompt
 
 def is_probably_html(resp: httpx.Response) -> bool:
     ctype = resp.headers.get("content-type", "") or ""
@@ -25,8 +26,8 @@ def is_probably_html(resp: httpx.Response) -> bool:
 
 def host_of(url: str) -> str:
     try:
-        return urlparse(url).netloc.lower()
-    except:
+        return (urlparse(url).hostname or "").lower()
+    except ValueError:
         return ""
 
 @dataclass
@@ -59,10 +60,12 @@ class AsyncCrawler:
         model_analyze: str,
         model_embed: str,
         hunt_terms: List[str],
-        hunt_max_leads: int
+        hunt_max_leads: int,
+        prompt_profile: str = STANDARD
     ):
+        self.prompt_profile = prompt_profile
         self.seed_urls = seed_urls
-        self.primary_seed = seed_urls[0] if seed_urls else ""  # For same_domain comparison
+        self.allowed_seed_hosts = {host_of(url) for url in seed_urls if host_of(url)}
         self.max_depth = max_depth
         self.max_urls = max_urls
         self.run_dir = run_dir
@@ -150,8 +153,8 @@ class AsyncCrawler:
         if getattr(self.fetcher, "proxy_pool", None):
             try:
                 write_json(self.proxy_state, self.fetcher.proxy_pool.as_dict())
-            except:
-                pass
+            except (OSError, TypeError, ValueError) as exc:
+                print(f"[WARN] could not save proxy state: {exc}")
 
     def _enqueue(self, url: str, depth: int) -> bool:
         url = clean_url(url)
@@ -174,7 +177,16 @@ class AsyncCrawler:
     def _scoped(self, url: str) -> bool:
         if not url:
             return False
-        if self.same_domain_only and not same_domain(url, self.primary_seed):
+        try:
+            parsed = urlparse(url)
+            host = (parsed.hostname or "").lower()
+        except ValueError:
+            return False
+        if parsed.scheme not in {"http", "https"} or parsed.username or parsed.password:
+            return False
+        if not host:
+            return False
+        if self.same_domain_only and host not in self.allowed_seed_hosts:
             return False
         return True
 
@@ -188,34 +200,9 @@ class AsyncCrawler:
         return False, sh
 
     def _analysis_prompt(self, url: str, title: str, text: str) -> str:
-        snippet = (text or "")[:12000]
-        return f"""
-You are an OSINT analyst. Produce a structured intelligence extraction from this webpage.
-
-Rules:
-- No filler. No moralizing.
-- Only use evidence from the content.
-- Output valid JSON only.
-
-Return schema:
-{{
-  "url": "...",
-  "title": "...",
-  "summary": "2-4 sentences",
-  "key_entities": ["..."],
-  "key_locations": ["..."],
-  "key_dates": ["..."],
-  "keywords": ["..."],
-  "risk_flags": ["..."],
-  "actionable_leads": ["..."]
-}}
-
-URL: {url}
-TITLE: {title}
-
-CONTENT:
-{snippet}
-""".strip()
+        # Delegates to the prompt registry. The 'standard' profile is the same text this
+        # method has always produced, so osint-tuned-v3 sees identical input.
+        return page_prompt(url, title, text, self.prompt_profile)
 
     async def _process_one(self, client: httpx.AsyncClient, url: str, depth: int):
         url = clean_url(url)
@@ -231,11 +218,24 @@ CONTENT:
         lock = self._host_lock(url)
         async with lock:
             try:
-                resp = await self.fetcher.get(client, url)
+                resp = await self.fetcher.get(client, url, redirect_validator=self._scoped)
+            except FetchRejected as e:
+                self.visited.add(url)
+                print(f"[SKIP] {url} -> {e}")
+                return
             except Exception as e:
                 print(f"[FAIL] {url} -> {e}")
                 return
 
+        requested_url = url
+        final_url = clean_url(str(resp.url))
+        if not final_url or not self._scoped(final_url):
+            self.visited.add(url)
+            print(f"[SKIP] redirect outside seed domains: {url} -> {final_url}")
+            return
+        if final_url != requested_url:
+            self.visited.add(requested_url)
+        url = final_url
         status = resp.status_code
         if status != 200 or not is_probably_html(resp):
             self.visited.add(url)
@@ -305,8 +305,8 @@ CONTENT:
                     out_vec = os.path.join(self.embed_dir, f"{rid}.embed.json")
                     with open(out_vec, "w", encoding="utf-8") as f:
                         json.dump({"url": url, "model": self.model_embed, "embedding": vec}, f)
-            except:
-                pass
+            except (OSError, TypeError, ValueError) as exc:
+                print(f"[WARN] embedding write failed for {url}: {exc}")
 
         # hunt mode on every page (lightweight)
         hunt = hunt_leads(text, self.hunt_terms, max_leads=self.hunt_max_leads) if self.hunt_terms else {"hits": [], "lead_urls": []}
@@ -331,12 +331,20 @@ CONTENT:
 
     async def crawl(self):
         limits = httpx.Limits(max_connections=self.concurrency * 2, max_keepalive_connections=self.concurrency)
-        async with httpx.AsyncClient(limits=limits) as client:
+        async with httpx.AsyncClient(limits=limits, trust_env=False) as client:
             sem = asyncio.Semaphore(self.concurrency)
 
             async def worker(u: str, d: int):
                 async with sem:
-                    await self._process_one(client, u, d)
+                    try:
+                        await self._process_one(client, u, d)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:
+                        # Page-specific parser/analyzer defects must not abort
+                        # unrelated work in the same concurrent batch.
+                        self.visited.add(u)
+                        print(f"[FAIL] {u} -> unexpected processing error: {exc}")
 
             while self.queue and len(self.visited) < self.max_urls:
                 batch = []
