@@ -1,6 +1,6 @@
 <img src="bd800949-d4d1-44ce-849e-ba40837590bc.png" alt="OSINTai Logo" width="100%">
 
-# OSINTai v3.4 - Advanced AI-Powered OSINT Web Crawler
+# OSINTai v4 - Advanced Local-First OSINT Web Crawler
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
@@ -10,6 +10,17 @@
 ## Overview
 
 **OSINTai** is a cutting-edge, AI-enhanced web crawler engineered for **Open Source Intelligence (OSINT)** professionals, cybersecurity researchers, and digital investigators. Leveraging advanced asynchronous processing, intelligent proxy rotation, and state-of-the-art LLM analysis, OSINTai automates comprehensive intelligence gathering from web sources with unparalleled efficiency and accuracy.
+
+## v4 Highlights
+
+- Deterministic post-crawl analysis with evidence-labelled findings, correlations, timelines, hypotheses, and leads
+- Unicode and homoglyph detection, sensitive-infrastructure checks, secret-presence reporting, and generated-text fingerprints
+- Cross-source entity correlation with candidate-only relationships and supporting URLs
+- Optional run-level model analysis and multi-model cross-checks that preserve disagreement
+- Deterministic model-output evaluation and inert local training-dataset exports
+- Multi-seed scope enforcement across queueing and every redirect hop
+- HTML/XHTML-only response handling with configurable decoded-size limits
+- Loopback-only Ollama communication, validated run identifiers, and atomic JSON checkpoints
 
 **Key Capabilities:**
 - **High-Performance Async Crawling** with intelligent concurrency controls
@@ -101,7 +112,7 @@ Pages are automatically ranked by total score, with AI-enhanced intelligence rec
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/yourusername/OSINTai.git
+git clone https://github.com/gs-ai/OSINTai.git
 cd OSINTai
 
 # 2. Create conda environment
@@ -218,8 +229,17 @@ https://site3.com
 
 Then run:
 ```bash
-python run_osintai.py --seed "https://example.com"  # Will also check for seed_urls.txt
+python run_osintai.py \
+  --seed-file seed_urls.txt \
+  --depth 2 \
+  --max 150 \
+  --same-domain
 ```
+
+With multiple seeds, `--same-domain` permits links on any listed seed hostname while
+rejecting links and redirects to other hosts. Responses are streamed and accepted only
+when they are HTML/XHTML and no larger than 2,000,000 decoded bytes. Change the bound
+with `--max-response-bytes` if a specific authorized page requires it.
 
 ---
 
@@ -233,7 +253,7 @@ usage: run_osintai.py [-h] [--seed SEED] [--depth DEPTH] [--max MAX]
                       [--no-ollama] [--hunt HUNT] [--hunt-max HUNT_MAX]
                       [--run-id RUN_ID]
 
-OSINTai v3.4 FULL (async + proxy + dedupe + embeddings + hunt + graph export)
+OSINTai v4 (async crawling and analysis)
 
 required arguments:
   --seed SEED           Seed URL (or use seed_urls.txt file)
@@ -252,6 +272,76 @@ optional arguments:
   --hunt HUNT          Comma-separated hunt terms (optional)
   --hunt-max HUNT_MAX  Max lead URLs per page from hunt mode (default: 50)
   --run-id RUN_ID      Optional run ID override (default: auto-generated)
+
+analysis options:
+  --profile {default,survey}   Named run profile applied before explicit flags
+  --prompt-profile {standard,threat}  Page analysis lens (default: standard)
+  --no-analysis        Skip the post-crawl analysis stage (crawl and report only)
+  --gap-days GAP_DAYS  Temporal gap threshold in days (default: 90)
+  --leads-per-kind N   Max entities of each kind expanded into leads (default: 10)
+
+optional deeper analysis (off by default):
+  --deep               Model-assisted run-level analysis pass
+  --cross-check MODELS Comma-separated extra Ollama models to cross-check claims
+  --evaluate           Score analysis quality against the investigative rubric
+  --training-export    Export local training/evaluation datasets (needs --evaluate)
+  --experimental-recursive N  Extra bounded refinement passes, 0-3 (default: 0)
+```
+
+### Analysis Layer
+
+After the crawl completes, OSINTai runs a deterministic analysis stage over what the crawl
+collected. It is fast, works fully offline, and is on by default; `--no-analysis` skips it.
+
+**Deterministic checks (no model involved):**
+- Unicode / homoglyph detection on collected domains and handles, including zero-width characters
+- Sensitive infrastructure: `.gov` / `.mil` identifiers and non-routable (RFC1918) IP exposure
+- Credential and secret exposure, including JWT claim decoding. Matched secret values are
+  never written into findings or reports, only their presence and location
+- Generated-content fingerprinting, flagging pages carrying unedited language-model output
+- Cross-source correlation producing scored candidate links backed by evidence URLs
+- Temporal analysis: ordered timeline, activity gaps, open trailing gaps, bursts
+- Recurring cross-page signals and score outliers
+
+**Observed versus derived.** Every analytical statement is labelled by origin:
+
+| Label | Meaning |
+| --- | --- |
+| `OBSERVED` | Present in the fetched source material |
+| `DERIVED` | Computed deterministically from observed material. Reproducible |
+| `MODEL` | A language model's interpretation. Not a measurement |
+| `HYPOTHESIS` | A proposed explanation, with what would confirm and refute it |
+
+Confidence is reported by kind (`source_support`, `deterministic`, `model_self`,
+`cross_model`, `human_review`) and the kinds are never merged. A model's self-reported
+confidence is recorded, labelled, and never treated as factual reliability.
+
+**Optional deeper modes.** Nothing below runs unless requested, and the default path stays
+one model call per page:
+
+```bash
+# Run-level model analysis across the whole crawl
+python run_osintai.py --seed "https://target.example/" --deep
+
+# Cross-check the model's risk assessments against a second model.
+# Where models disagree, the disagreement is preserved, not averaged away.
+python run_osintai.py --seed "https://target.example/" --cross-check "mistral:7b-instruct-v0.3-q5_K_M"
+
+# Score analysis quality and export portable local training/evaluation datasets
+python run_osintai.py --seed "https://target.example/" --evaluate --training-export
+```
+
+**Training export.** `--training-export` writes evaluation tasks, scored analyses, and
+preference records into the local run directory. OSINTai performs no training, includes no
+training dependencies, and never modifies model weights.
+
+### Run Profiles
+
+`--profile survey` applies a deeper, narrower, politer parameter set (depth 3, max 300,
+same-domain, concurrency 10, per-host 3). Explicit flags always override the profile.
+
+```bash
+python run_osintai.py --seed "https://target.example/" --profile survey --run-id "target.example_001"
 ```
 
 ---
@@ -276,6 +366,17 @@ Each crawl generates a timestamped directory under `data/runs/` with comprehensi
 - **`ranked_pages.json`** - Structured intelligence prioritization and scoring
 - **`graph_nodes.jsonl`** - Graph nodes for network visualization and analysis
 - **`graph_edges.jsonl`** - Graph relationships and connections
+
+### Analysis Results (unless `--no-analysis`)
+- **`analysis_report.txt`** - Findings separated by origin, correlations, timeline, hypotheses, leads
+- **`findings.jsonl`** - Every finding with priority, evidence, sources, confidence, and next step
+- **`correlations.jsonl`** - Scored candidate entity links with the evidence URLs behind each
+- **`timeline.jsonl`** - Ordered event stream with original timestamps preserved
+- **`hypotheses.jsonl`** - Labelled hypotheses with confirm/refute conditions
+- **`leads.jsonl`** - Pivot lookup paths per identifier, with false-positive risk notes
+- **`analysis_summary.json`** - Per-stage notes, errors, and statistics
+- **`run_manifest.json`** - What was requested, which models answered, and where output went
+- **`training_export/`** - Local dataset package (only with `--evaluate --training-export`)
 
 ### Raw Content Archives
 - **`pages_raw/`** - Original HTML content for forensic analysis
@@ -531,13 +632,14 @@ src/osintai/
 
 ### Operational Security Features
 - **Anonymization**: Proxy rotation and user-agent randomization
-- **Stealth Techniques**: Adaptive delays and request patterns
-- **Data Sanitization**: No sensitive information logging
+- **Bounded Requests**: Adaptive delays, concurrency limits, scoped redirects, and response-size limits
+- **Sensitive Findings**: Secret-shaped values are not repeated in generated findings or reports
+- **Local Data**: Raw pages and run artifacts stay under ignored `data/runs/`; operators must protect that directory
 - **Provenance Tracking**: Complete audit trail for intelligence chain of custody
 
 ### Ethical Usage Guidelines
 - **Legal Compliance**: Authorized access to publicly available information only
-- **Terms Respect**: Honor site policies, robots.txt, and service agreements
+- **Terms Respect**: Configure and operate crawls in accordance with site policies and service agreements
 - **Data Handling**: Secure storage and responsible intelligence dissemination
 - **Attribution**: Maintain source credibility and investigation integrity
 
@@ -554,7 +656,7 @@ src/osintai/
 ### Development Environment
 ```bash
 # Fork and clone
-git clone https://github.com/yourusername/OSINTai.git
+git clone https://github.com/gs-ai/OSINTai.git
 cd OSINTai
 
 # Create development environment
@@ -577,7 +679,7 @@ pip install black flake8 pytest mypy
 1. Fork the repository
 2. Create a feature branch (`git checkout -b feature/amazing-enhancement`)
 3. Implement changes with tests
-4. Ensure all tests pass (`pytest`)
+4. Ensure all tests pass (`python -m unittest discover -s tests -v`)
 5. Format code (`black .`)
 6. Lint code (`flake8`)
 7. Commit with clear messages
@@ -603,7 +705,15 @@ pip install black flake8 pytest mypy
 
 ## Changelog
 
-### v3.4 FULL (2026-07-11) - Current Release
+### v4.0.0 (2026-08-14) - Current Release
+- **Evidence-Labelled Analysis**: Findings distinguish observed, derived, model-assisted, and hypothetical statements
+- **Expanded Deterministic Checks**: Homoglyphs, sensitive infrastructure, secret presence, generated text, temporal gaps, and outliers
+- **Cross-Source Intelligence**: Entity normalization, evidence-backed candidate correlations, timelines, hypotheses, and pivot leads
+- **Optional Deep Analysis**: Bounded run-level analysis, multi-model cross-checks, deterministic evaluation, and local dataset export
+- **Network Guardrails**: Redirects are scope-checked before each request; non-HTML and oversized responses are rejected
+- **Runtime Hardening**: Ollama is loopback-only, run IDs cannot escape the output directory, and checkpoints are atomic
+
+### v3.4 FULL (2026-07-11)
 - **Efficient Crawl Scheduling**: O(1) queue operations with duplicate suppression across queued, active, and visited URLs
 - **Robust Resume State**: Restores pending work, visited URLs, and Simhash history without losing multi-seed context
 - **Active Proxy Rotation**: Proxies are applied to outbound requests with per-proxy success/failure scoring and persisted health state
@@ -630,8 +740,8 @@ pip install black flake8 pytest mypy
 
 ## Support & Community
 
-- **Bug Reports**: [GitHub Issues](https://github.com/yourusername/OSINTai/issues)
-- **Feature Requests**: [GitHub Discussions](https://github.com/yourusername/OSINTai/discussions)
+- **Bug Reports**: [GitHub Issues](https://github.com/gs-ai/OSINTai/issues)
+- **Feature Requests**: [GitHub Discussions](https://github.com/gs-ai/OSINTai/discussions)
 - **Documentation**: Comprehensive in-code docstrings and this README
 - **Community**: OSINT professional forums and security research communities
 
@@ -645,4 +755,4 @@ Built for the OSINT community with contributions from security researchers, digi
 
 ---
 
-*OSINTai v3.4 - Illuminating the shadows of open source intelligence.*
+*OSINTai v4 - Illuminating the shadows of open source intelligence.*

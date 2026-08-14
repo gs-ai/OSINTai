@@ -2,10 +2,14 @@ import hashlib
 import re
 
 def sha1_bytes(b: bytes) -> str:
-    return hashlib.sha1(b).hexdigest()
+    # Stable legacy artifact identifier; never used for cryptographic security.
+    return hashlib.sha1(b, usedforsecurity=False).hexdigest()
 
 def sha1_text(s: str) -> str:
-    return hashlib.sha1(s.encode("utf-8", errors="ignore")).hexdigest()
+    # Stable legacy artifact identifier; never used for cryptographic security.
+    return hashlib.sha1(
+        s.encode("utf-8", errors="ignore"), usedforsecurity=False
+    ).hexdigest()
 
 def simhash_64(text: str) -> int:
     """

@@ -1,0 +1,55 @@
+name: Release gate
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-gate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  release-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install locked runtime dependencies
+        run: python -m pip install --disable-pip-version-check -r requirements.txt
+
+      - name: Install pinned release tools
+        run: python -m pip install --disable-pip-version-check pip-audit==2.10.1 bandit==1.9.4 ruff==0.16.3
+
+      - name: Audit runtime dependencies
+        run: python -m pip_audit -r requirements.txt
+
+      - name: Run tests
+        run: python -W error::ResourceWarning -m unittest discover -s tests -v
+
+      - name: Compile Python sources
+        run: python -m py_compile run_osintai.py src/osintai/*.py tests/*.py
+
+      - name: Run security analysis
+        run: bandit -q -r src run_osintai.py -ll -ii
+
+      - name: Check correctness lint rules
+        run: ruff check --select E9,F63,F7,F82 src tests run_osintai.py
+
+      - name: Verify release identity
+        run: |
+          python run_osintai.py --version | grep -Fx "OSINTai 4.0.0"
+          python run_osintai.py --help >/dev/null

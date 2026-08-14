@@ -18,7 +18,7 @@ def absolutize(base_url: str, href: str) -> str:
         return None
     try:
         return urljoin(base_url, href)
-    except:
+    except ValueError:
         return None
 
 def same_domain(url1: str, url2: str) -> bool:
@@ -27,5 +27,5 @@ def same_domain(url1: str, url2: str) -> bool:
         d1 = urlparse(url1).netloc.lower()
         d2 = urlparse(url2).netloc.lower()
         return d1 == d2
-    except:
+    except ValueError:
         return False

@@ -1,4 +1,4 @@
-import random
+import secrets
 import time
 from typing import List, Dict, Optional
 from dataclasses import dataclass
@@ -43,7 +43,7 @@ class ProxyPool:
         # Weighted by score, but also random
         entries = sorted(self.entries, key=lambda e: e.score, reverse=True)
         top = entries[: max(3, len(entries) // 5)]
-        chosen = random.choice(top)
+        chosen = secrets.choice(top)
         chosen.last_used = time.time()
         return chosen.url
 

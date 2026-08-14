@@ -30,6 +30,8 @@ id_ed25519
 data/runs/
 data/cache/
 cases/
+/OSINTAI_SYNTHESIS/
+/TODO
 OSINTai_FILES1/
 proxies/
 proxy*.txt
