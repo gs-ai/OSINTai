@@ -36,6 +36,8 @@ OSINTai_FILES1/
 proxies/
 proxy*.txt
 *proxy*.txt
+# Harvester docs/config are not proxy data; keep them tracked.
+!requirements-proxyharvest.txt
 seed_urls.txt
 *_urls.txt
 *.har

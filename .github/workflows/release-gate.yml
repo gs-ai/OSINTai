@@ -41,15 +41,20 @@ jobs:
         run: python -W error::ResourceWarning -m unittest discover -s tests -v
 
       - name: Compile Python sources
-        run: python -m py_compile run_osintai.py src/osintai/*.py tests/*.py
+        run: >-
+          python -m py_compile run_osintai.py run_proxy_harvester.py
+          src/osintai/*.py src/osintai/proxyharvest/*.py tests/*.py
 
       - name: Run security analysis
-        run: bandit -q -r src run_osintai.py -ll -ii
+        run: bandit -q -r src run_osintai.py run_proxy_harvester.py -ll -ii
 
       - name: Check correctness lint rules
-        run: ruff check --select E9,F63,F7,F82 src tests run_osintai.py
+        run: ruff check --select E9,F63,F7,F82 src tests run_osintai.py run_proxy_harvester.py
 
       - name: Verify release identity
         run: |
           python run_osintai.py --version | grep -Fx "OSINTai 4.0.0"
           python run_osintai.py --help >/dev/null
+          python run_proxy_harvester.py --version | grep -Fx "OSINTai 4.0.0"
+          python run_proxy_harvester.py --help >/dev/null
+          python run_proxy_harvester.py --list-sources | python -c "import json,sys; assert json.load(sys.stdin)"

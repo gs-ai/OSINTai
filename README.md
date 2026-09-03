@@ -417,6 +417,13 @@ data/runs/2026-01-16_143022_investigation_001/
 **Purpose**: IP rotation and anonymity
 **Format**: One proxy URL per line (`http://ip:port` or `ip:port`)
 **Location**: Any accessible file path
+**Generate one**: `run_proxy_harvester.py` writes this format to
+`data/proxies/working_set_latest.txt` (see [Proxy Harvester](#proxy-harvester))
+
+### Proxy Harvester Config (Optional)
+**Purpose**: Source list and thresholds for `run_proxy_harvester.py`
+**Format**: JSON (`config.example.json`), or YAML with PyYAML installed
+**Location**: Passed via `--config`
 
 ### Seed URLs (`seed_urls.txt`) - Optional
 **Purpose**: Batch processing of multiple starting points
@@ -428,6 +435,60 @@ https://target1.com/investigation
 https://target2.com/research
 https://target3.com/analysis
 ```
+
+---
+
+## Proxy Harvester
+
+A separate entry point, `run_proxy_harvester.py`, continuously discovers and
+validates public free proxies and exports a working set the crawler can consume
+via `--proxies`.
+
+```bash
+# Inspect what the sources yield without sending a single probe
+python run_proxy_harvester.py --dry-run
+
+# One full cycle: harvest, validate, classify, export
+python run_proxy_harvester.py --once --export-dir data/proxies
+
+# Continuous operation on a randomized 19-23 minute cycle
+python run_proxy_harvester.py --export-dir data/proxies
+
+# Feed the result straight into a crawl
+python run_osintai.py --seed https://example.com \
+    --proxies data/proxies/working_set_latest.txt
+```
+
+**What it does**
+
+- Fetches public raw text/JSON proxy lists, dispatching to a Playwright renderer
+  only for sources that genuinely render client-side (`--enable-js`)
+- Validates concurrently against JSON echo endpoints with a two-phase
+  confirmation probe, so proxies that answer once and die do not enter the set
+- Rejects any response whose body does not match the echo schema, catching
+  captive portals and content injection
+- Grades anonymity as `transparent` / `anonymous` / `elite` against a measured
+  baseline of your own egress address
+- Persists the working set in SQLite with churn tracking and automatic retirement
+- Exports CSV / JSON / JSONL / TXT plus a manifest at configurable checkpoints
+
+**What it does not do**
+
+It does not produce a verified residential proxy pool. Consented residential
+bandwidth is a metered commercial product behind an account; free public lists
+carry unverified "residential" labels that are frequently wrong and stale within
+hours, and unconsented residential exits are commonly compromised devices. This
+module therefore labels network type as **evidence-graded indication** —
+`residential_indicated`, `mobile_indicated`, `datacenter`, `hosting`, `unknown` —
+with a `classification_basis` naming every signal that fired and a confidence
+score that never reaches certainty.
+
+Treat the output as disposable test infrastructure. Never route authenticated
+sessions, client identifiers, or case-linked queries through a harvested proxy.
+
+**Full documentation:** [`docs/PROXY_HARVESTER.md`](docs/PROXY_HARVESTER.md) —
+cycle mechanics, the `L(s)` language heuristic, classification precedence, ASN
+table format, feedback-loop risk, CLI reference, and runbook.
 
 ---
 
@@ -613,6 +674,17 @@ src/osintai/
 ├── scoring.py          # Page ranking and intelligence prioritization
 ├── report.py           # Human-readable report generation
 ├── storage.py          # File I/O and data persistence utilities
+├── proxyharvest/       # Public free-proxy harvesting and validation
+│   ├── sources.py      #   Source registry and language dispatch L(s)
+│   ├── parsers.py      #   Text / JSON / HTML candidate extraction
+│   ├── harvest.py      #   Source fetching, robots, Playwright dispatch
+│   ├── validate.py     #   Concurrent probes, anonymity grading, integrity
+│   ├── classify.py     #   ASN / PTR evidence-graded classification
+│   ├── store.py        #   SQLite working set, churn, cycle metrics
+│   ├── export.py       #   CSV / JSON / JSONL / TXT exports and manifest
+│   ├── cycle.py        #   Cycle orchestration and signal handling
+│   ├── status.py       #   Live CLI status rendering
+│   └── cli.py          #   Harvester command-line interface
 └── __init__.py         # Package initialization
 ```
 
