@@ -151,6 +151,16 @@ def write_analysis_report(
     lines.append(f"  findings: {len(findings)}")
     lines.append(f"  hypotheses: {len(output.hypotheses)}")
     lines.append(f"  leads: {len(output.leads)}")
+    lines.append(f"  coverage: {'PARTIAL — review limits and failures' if stats.get('partial_coverage') else 'within configured analysis scope'}")
+    lines.append(f"  truncated page texts: {stats.get('pages_text_truncated', 0)}")
+    lines.append(f"  missing/unreadable texts: {len(stats.get('text_coverage', {}).get('missing', [])) + len(stats.get('text_coverage', {}).get('unreadable', []))}")
+    lines.append(f"  extraction failures: {len(stats.get('extraction_failures', []))}")
+    lines.append(f"  pages beyond extended-scan limit: {stats.get('pages_over_scan_limit', 0)}")
+    lines.append(f"  indicator values omitted by extraction caps: {stats.get('indicator_values_omitted', 0)}")
+    if stats.get("extraction_cache"):
+        lines.append(f"  extraction checkpoints: {stats['extraction_cache']}")
+    for model, counts in stats.get("model_responses", {}).get("models", {}).items():
+        lines.append(f"  model responses ({model}): {counts}")
 
     # HOW TO READ
     lines.extend(_section("HOW TO READ THIS REPORT"))

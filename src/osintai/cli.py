@@ -5,6 +5,8 @@ import json
 import asyncio
 import re
 import time
+import tempfile
+import math
 from urllib.parse import urlparse
 
 from osintai.storage import safe_mkdir, now_run_id, load_lines, write_json
@@ -121,9 +123,53 @@ def _resolve_seed_urls(
     # Ordered de-duplication prevents redundant work without changing priority.
     return list(dict.fromkeys(seeds))
 
+def _analyze_saved_run(args: argparse.Namespace, ap: argparse.ArgumentParser, base_dir: str) -> None:
+    """Recover offline into a unique directory without touching original outputs."""
+    try:
+        run_id = _validate_run_id(args.analyze_only)
+    except ValueError as exc:
+        ap.error(str(exc))
+    source = os.path.realpath(os.path.join(base_dir, "data", "runs", run_id))
+    runs_root = os.path.realpath(os.path.join(base_dir, "data", "runs"))
+    if os.path.commonpath([source, runs_root]) != runs_root:
+        ap.error("saved run must remain inside data/runs")
+    if not os.path.isfile(os.path.join(source, "urls_crawled.jsonl")):
+        ap.error(f"No saved crawl found in {source}")
+    if args.no_analysis or args.deep or args.cross_check or args.experimental_recursive:
+        ap.error("--analyze-only is offline; incompatible with --no-analysis or model-assisted modes")
+    destination = tempfile.mkdtemp(prefix="reanalysis_", dir=source)
+    print(f"OSINTai {__version__}: offline analysis of {run_id}", flush=True)
+    print(f"RESULTS: {destination}", flush=True)
+    output = analyze_run(
+        source,
+        AnalysisOptions(
+            use_ollama=False, evaluate=args.evaluate, training_export=args.training_export,
+            gap_days=args.gap_days, max_leads_per_kind=args.leads_per_kind,
+            max_text_chars=args.analysis_max_chars,
+            page_deadline_s=getattr(args, 'analysis_page_timeout', 30.0),
+            stage_deadline_s=getattr(args, 'analysis_stage_timeout', 120.0),
+            candidate_pair_budget=getattr(args, 'correlation_pair_budget', 100_000),
+            text_cache_bytes=getattr(args, 'text_cache_bytes', 16_000_000),
+        ),
+        run_id=run_id, output_dir=destination,
+        log=lambda message: print(message, flush=True),
+    )
+    print(f"DONE. Analysis report: {output.artifacts['analysis_report']}", flush=True)
+
+
+
 def main():
+    try:
+        _main()
+    except KeyboardInterrupt:
+        print("\nInterrupted. Saved crawl files are retained. Recover with "
+              "--analyze-only RUN_ID.", file=sys.stderr, flush=True)
+        raise SystemExit(130)
+
+
+def _main():
     ap = argparse.ArgumentParser(
-        description=f"OSINTai v{__version__.split('.')[0]} (async crawling and analysis)"
+        description=f"OSINTai {__version__} (async crawling and analysis)"
     )
     ap.add_argument("--version", action="version", version=f"OSINTai {__version__}")
     ap.add_argument(
@@ -154,6 +200,17 @@ def main():
     ap.add_argument("--hunt-max", type=int, default=50, help="Max lead URLs per page from hunt mode")
 
     ap.add_argument("--run-id", default="", help="Optional run id override")
+    ap.add_argument("--analyze-only", metavar="RUN_ID",
+                    help="Analyze a saved run offline into a new reanalysis directory")
+    ap.add_argument("--retry-model", metavar="RUN_ID", help="Retry failed/missing model responses over saved pages using local Ollama")
+    ap.add_argument("--retry-limit", type=int, default=20, help="Maximum saved pages retried (default: 20)")
+    ap.add_argument("--retry-timeout", type=float, default=60.0, help="Total deadline per model retry in seconds")
+    ap.add_argument("--analysis-page-timeout", type=float, default=30.0, help="Disposable extraction worker deadline in seconds")
+    ap.add_argument("--analysis-stage-timeout", type=float, default=120.0, help="Disposable analysis stage deadline in seconds")
+    ap.add_argument("--correlation-pair-budget", type=int, default=100_000, help="Maximum co-occurrence candidate pairs examined")
+    ap.add_argument("--text-cache-bytes", type=int, default=16_000_000, help="Maximum page-text LRU cache bytes per process")
+    ap.add_argument("--analysis-max-chars", type=int, default=200_000,
+                    help="Maximum characters analyzed per saved page (default: 200000)")
 
     ap.add_argument(
         "--profile",
@@ -221,7 +278,7 @@ def main():
     profile_applied = []
     for dest, value in profile_values.items():
         flag = "--" + dest.replace("_", "-")
-        if flag in argv:
+        if any(arg == flag or arg.startswith(flag + "=") for arg in argv):
             continue
         setattr(args, dest, value)
         profile_applied.append(f"{dest}={value}")
@@ -234,6 +291,38 @@ def main():
         ap.error("--training-export requires --evaluate")
 
     base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+
+    for flag, value in (("analysis-max-chars", args.analysis_max_chars),
+                        ("retry-limit", args.retry_limit), ("retry-timeout", args.retry_timeout),
+                        ("analysis-page-timeout", args.analysis_page_timeout),
+                        ("analysis-stage-timeout", args.analysis_stage_timeout),
+                        ("correlation-pair-budget", args.correlation_pair_budget),
+                        ("text-cache-bytes", args.text_cache_bytes),
+                        ("concurrency", args.concurrency), ("per-host", args.per_host),
+                        ("max", args.max), ("hunt-max", args.hunt_max),
+                        ("leads-per-kind", args.leads_per_kind)):
+        if not math.isfinite(value) or value <= 0:
+            ap.error(f"--{flag} must be finite and greater than zero")
+    if args.depth < 0:
+        ap.error("--depth must be nonnegative")
+    if args.retry_model:
+        if args.analyze_only or args.no_ollama:
+            ap.error("--retry-model requires Ollama and cannot be combined with --analyze-only")
+        from .model_retry import retry_saved
+        try:
+            saved_id = _validate_run_id(args.retry_model)
+        except ValueError as exc:
+            ap.error(str(exc))
+        runs = os.path.realpath(os.path.join(base_dir, "data", "runs"))
+        source = os.path.realpath(os.path.join(runs, saved_id))
+        if os.path.commonpath([runs, source]) != runs or not os.path.isfile(os.path.join(source, "urls_crawled.jsonl")):
+            ap.error("No saved crawl found inside data/runs")
+        result = asyncio.run(retry_saved(source, OllamaAPI(), args.model, args.retry_limit,
+            args.retry_timeout, args.analysis_max_chars, args.prompt_profile))
+        print(f"DONE. Saved model retry results: {result}")
+        return
+    if args.analyze_only:
+        return _analyze_saved_run(args, ap, base_dir)
 
     try:
         seed_urls = _resolve_seed_urls(args.seed, args.seed_file, base_dir)
@@ -291,7 +380,8 @@ def main():
         model_embed=args.embed_model,
         hunt_terms=hunt_terms,
         hunt_max_leads=args.hunt_max,
-        prompt_profile=args.prompt_profile
+        prompt_profile=args.prompt_profile,
+        extraction_timeout_s=args.analysis_page_timeout
     )
 
     cross_check_models = [m.strip() for m in args.cross_check.split(",") if m.strip()]
@@ -312,7 +402,7 @@ def main():
 
     print("")
     print("=" * 80)
-    print(f"OSINTai v{__version__.split('.')[0]}")
+    print(f"OSINTai {__version__}")
     print(f"RUN DIR: {run_dir}")
     print(f"SEEDS: {len(seed_urls)} URL(s)")
     if len(seed_urls) == 1:
@@ -363,6 +453,11 @@ def main():
             use_ollama=(not args.no_ollama),
             experimental_recursive=args.experimental_recursive,
             max_leads_per_kind=args.leads_per_kind,
+            max_text_chars=args.analysis_max_chars,
+            page_deadline_s=args.analysis_page_timeout,
+            stage_deadline_s=args.analysis_stage_timeout,
+            candidate_pair_budget=args.correlation_pair_budget,
+            text_cache_bytes=args.text_cache_bytes,
         )
         try:
             analysis_output = analyze_run(
@@ -370,21 +465,9 @@ def main():
                 options=options,
                 ollama=ollama,
                 run_id=run_id,
-                log=print,
+                log=lambda message: print(message, flush=True),
             )
-            analysis_report_path = write_analysis_report(
-                run_dir,
-                analysis_output,
-                run_id=run_id,
-                scope={
-                    "seeds": len(seed_urls),
-                    "depth": args.depth,
-                    "max urls": args.max,
-                    "same domain only": args.same_domain,
-                    "analysis model": args.model if not args.no_ollama else "none",
-                    "prompt profile": args.prompt_profile,
-                },
-            )
+            analysis_report_path = analysis_output.artifacts["analysis_report"]
         except Exception as exc:
             # The crawl is already saved. An analysis failure must not cost the operator it.
             print(f"[FAIL] analysis stage aborted -> {exc}")
@@ -418,6 +501,9 @@ def main():
         "experimental_recursive": args.experimental_recursive,
         "gap_days": args.gap_days,
         "pages_scored": len(page_scores),
+        "model_responses": analysis_output.stats.get("model_responses", {}) if analysis_output else {},
+        "model_call_counts": crawler.ollama.response_counts if crawler.ollama else {},
+        "analysis_bundle": analysis_output.artifacts.get("run_manifest") if analysis_output else None,
         "analysis_stats": analysis_output.stats if analysis_output else {},
     })
 

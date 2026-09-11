@@ -285,7 +285,7 @@ def check_sensitive_infrastructure(index) -> CheckResult:
     return result
 
 
-def check_secret_exposure(page_extras: Dict[str, Dict[str, List[str]]]) -> CheckResult:
+def check_secret_exposure(page_extras: Dict[str, Dict[str, Any]]) -> CheckResult:
     """Credential-shaped and secret-shaped material on crawled pages.
 
     Deliberately reports presence and location only. The matched value is not copied into
@@ -298,14 +298,17 @@ def check_secret_exposure(page_extras: Dict[str, Dict[str, List[str]]]) -> Check
         jwts = extras.get("jwts") or []
         pairs = extras.get("credential_pairs") or []
 
-        if tokens:
-            high_entropy = [t for t in tokens if _shannon_entropy(t) >= 3.5]
+        summary = extras.get("secret_summary") or {}
+        token_count = summary.get("token_count", len(tokens))
+        high_entropy_count = summary.get("high_entropy_count", sum(_shannon_entropy(t) >= 3.5 for t in tokens))
+        pair_count = summary.get("pair_count", len(pairs))
+        if token_count:
             result.findings.append(Finding(
                 check="Potential Secret Exposure",
                 item=url,
                 reason=(
-                    f"{len(tokens)} key/token-shaped value(s) found in page content, "
-                    f"{len(high_entropy)} of them high-entropy."
+                    f"{token_count} key/token-shaped value(s) found in page content, "
+                    f"{high_entropy_count} of them high-entropy."
                 ),
                 next_step=(
                     "Open the page and confirm whether these are live credentials, example "
@@ -313,11 +316,11 @@ def check_secret_exposure(page_extras: Dict[str, Dict[str, List[str]]]) -> Check
                     "notify the owner rather than using them."
                 ),
                 origin=DERIVED,
-                priority=HIGH if high_entropy else MEDIUM,
+                priority=HIGH if high_entropy_count else MEDIUM,
                 sources=[url],
                 evidence={
-                    "token_count": len(tokens),
-                    "high_entropy_count": len(high_entropy),
+                    "token_count": token_count,
+                    "high_entropy_count": high_entropy_count,
                     "value_recorded": False,
                 },
                 method="token_pattern_entropy",
@@ -325,8 +328,10 @@ def check_secret_exposure(page_extras: Dict[str, Dict[str, List[str]]]) -> Check
                     0.6, "pattern match; placeholders and examples also match")],
             ))
 
-        for token in jwts:
-            claims = decode_jwt_payload(token)
+        jwt_states = summary.get("jwt_decodable", [])
+        for token in (jwts or jwt_states):
+            claims = decode_jwt_payload(token) if isinstance(token, str) else None
+            decodable = bool(claims) if isinstance(token, str) else token
             claim_keys = sorted(claims.keys()) if claims else []
             result.findings.append(Finding(
                 check="JWT Present",
@@ -340,7 +345,7 @@ def check_secret_exposure(page_extras: Dict[str, Dict[str, List[str]]]) -> Check
                     "identify the issuing system. Do not replay the token."
                 ),
                 origin=DERIVED,
-                priority=HIGH if claims else MEDIUM,
+                priority=HIGH if decodable else MEDIUM,
                 sources=[url],
                 evidence={
                     "claim_keys": claim_keys,
@@ -351,15 +356,15 @@ def check_secret_exposure(page_extras: Dict[str, Dict[str, List[str]]]) -> Check
                 },
                 method="jwt_structural_decode",
                 confidence=[deterministic_confidence(
-                    0.95 if claims else 0.5,
-                    "three-segment structure decoded" if claims else "structure matched, payload unreadable")],
+                    0.95 if decodable else 0.5,
+                    "three-segment structure decoded" if decodable else "structure matched, payload unreadable")],
             ))
 
-        if pairs:
+        if pair_count:
             result.findings.append(Finding(
                 check="Credential-Shaped Content",
                 item=url,
-                reason=f"{len(pairs)} line(s) matching an identifier:secret layout.",
+                reason=f"{pair_count} line(s) matching an identifier:secret layout.",
                 next_step=(
                     "Determine whether the page is a leak, a configuration sample, or unrelated "
                     "colon-delimited data. Preserve the page capture before it is removed."
@@ -367,7 +372,7 @@ def check_secret_exposure(page_extras: Dict[str, Dict[str, List[str]]]) -> Check
                 origin=DERIVED,
                 priority=HIGH,
                 sources=[url],
-                evidence={"pair_count": len(pairs), "values_recorded": False},
+                evidence={"pair_count": pair_count, "values_recorded": False},
                 method="credential_pattern",
                 confidence=[deterministic_confidence(
                     0.5, "layout match only; colon-delimited data is common")],

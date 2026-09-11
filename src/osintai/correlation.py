@@ -12,6 +12,7 @@ That preserves reversibility and prevents sorted data from manufacturing identit
 from __future__ import annotations
 
 from collections import Counter, defaultdict
+from heapq import nsmallest
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 from urllib.parse import urlparse
@@ -82,6 +83,7 @@ def map_domains_to_urls(indicator_rows: Iterable[Dict[str, Any]]) -> Dict[str, A
     """Group crawled URLs under the domains that reference them, ranked by frequency."""
     domain_map: Dict[str, List[str]] = defaultdict(list)
     frequency: Counter = Counter()
+    seen = defaultdict(set)
 
     for row in indicator_rows or []:
         source = row.get("url") or ""
@@ -92,12 +94,16 @@ def map_domains_to_urls(indicator_rows: Iterable[Dict[str, Any]]) -> Dict[str, A
                 continue
             if not host:
                 continue
-            if url not in domain_map[host]:
-                domain_map[host].append(url)
+            if url not in seen[host]:
+                seen[host].add(url)
+                if len(domain_map[host]) < 200:
+                    domain_map[host].append(url)
             frequency[host] += 1
         source_host = (row.get("domain") or "").lower()
-        if source_host and source not in domain_map[source_host]:
-            domain_map[source_host].append(source)
+        if source_host and source not in seen[source_host]:
+            seen[source_host].add(source)
+            if len(domain_map[source_host]) < 200:
+                domain_map[source_host].append(source)
 
     return {
         "total_domains": len(domain_map),
@@ -124,8 +130,8 @@ def _site_wide(index: EntityIndex, page_count: int) -> set:
 
 
 def _co_occurrence_pairs(
-    index: EntityIndex, page_count: int
-) -> Tuple[List[Correlation], int]:
+    index: EntityIndex, page_count: int, candidate_budget: int = 100_000
+) -> Tuple[List[Correlation], int, dict]:
     """Identifiers that appeared together on the same page.
 
     Site-wide identifiers are excluded from pairing. On a single-site crawl the contact
@@ -137,18 +143,27 @@ def _co_occurrence_pairs(
     linkable = {EMAIL, PHONE, USERNAME, NAME}
     ubiquitous = _site_wide(index, page_count)
 
+    attempted = omitted = oversized = 0
     for url, entities in by_source.items():
         interesting = [
             e for e in entities if e.kind in linkable and e.key not in ubiquitous
         ]
-        if len(interesting) < 2 or len(interesting) > MAX_IDENTIFIERS_PER_PAGE:
+        possible = len(interesting) * (len(interesting) - 1) // 2
+        if len(interesting) > MAX_IDENTIFIERS_PER_PAGE:
+            oversized += possible
+            continue
+        remaining = max(0, candidate_budget - attempted)
+        omitted += max(0, possible - remaining)
+        if remaining == 0 or possible == 0:
             continue
         ordered = sorted(interesting, key=lambda e: (e.kind, e.canonical_value))
         for i, left in enumerate(ordered):
             for right in ordered[i + 1:]:
+                if attempted >= candidate_budget:
+                    break
+                attempted += 1
                 key = (left.key, right.key)
-                if url not in pair_evidence[key]:
-                    pair_evidence[key].append(url)
+                pair_evidence[key].append(url)
 
     correlations: List[Correlation] = []
     for (left_key, right_key), urls in pair_evidence.items():
@@ -165,13 +180,28 @@ def _co_occurrence_pairs(
             ),
             score=score,
         ))
-    return correlations, len(ubiquitous)
+    return correlations, len(ubiquitous), {
+        "candidate_pair_budget": candidate_budget, "candidate_pairs_examined": attempted,
+        "candidate_pairs_omitted": omitted, "oversized_page_pairs_omitted": oversized,
+        "partial_coverage": bool(omitted or oversized),
+    }
 
 
 def _identity_hints(index: EntityIndex) -> List[Correlation]:
     """Shape-based identity candidates: email local parts, name forms, phone variants."""
     correlations: List[Correlation] = []
     handles = {e.canonical_value.lstrip("@"): e for e in index.of_kind(USERNAME)}
+    prefixes = {}
+
+    def evidence(left, right):
+        small, large = sorted((left, right), key=lambda entity: len(entity.sources))
+        shared = nsmallest(25, (url for url in small.sources if url in large._source_set))
+        if shared:
+            return shared, True
+        for entity in (left, right):
+            if entity.key not in prefixes:
+                prefixes[entity.key] = nsmallest(25, entity.sources)
+        return sorted(set(prefixes[left.key]) | set(prefixes[right.key]))[:25], False
 
     for email in index.of_kind(EMAIL):
         local = email.canonical_value.split("@", 1)[0]
@@ -180,12 +210,12 @@ def _identity_hints(index: EntityIndex) -> List[Correlation]:
         handle = handles.get(local)
         if handle is None:
             continue
-        shared = sorted(set(email.sources) & set(handle.sources))
+        urls, shared = evidence(email, handle)
         correlations.append(Correlation(
             left_kind=EMAIL, left=email.canonical_value,
             right_kind=USERNAME, right=handle.value,
             relation=LOCAL_PART_MATCH,
-            evidence_urls=(shared or sorted(set(email.sources) | set(handle.sources)))[:25],
+            evidence_urls=urls,
             rationale=(
                 f"Email local part {local!r} matches the handle. Common local parts are reused "
                 "widely by unrelated people; treat as a pivot, not an identity."
@@ -198,12 +228,12 @@ def _identity_hints(index: EntityIndex) -> List[Correlation]:
         handle = handles.get(collapsed)
         if handle is None:
             continue
-        shared = sorted(set(name.sources) & set(handle.sources))
+        urls, shared = evidence(name, handle)
         correlations.append(Correlation(
             left_kind=NAME, left=name.value,
             right_kind=USERNAME, right=handle.value,
             relation=NAME_MATCH,
-            evidence_urls=(shared or sorted(set(name.sources) | set(handle.sources)))[:25],
+            evidence_urls=urls,
             rationale="Handle matches the name with separators removed.",
             score=0.4 if shared else 0.25,
         ))
@@ -240,14 +270,10 @@ def _domain_families(index: EntityIndex) -> List[Correlation]:
     for base, members in families.items():
         if len(members) < 2:
             continue
-        sources: List[str] = []
-        for member in members:
-            for url in member.sources:
-                if url not in sources:
-                    sources.append(url)
+        sources = list(dict.fromkeys(url for member in members for url in member.sources))
         correlations.append(Correlation(
             left_kind=DOMAIN, left=base,
-            right_kind=DOMAIN, right=", ".join(sorted(m.canonical_value for m in members)[:8]),
+            right_kind=DOMAIN, right=", ".join(nsmallest(8, (m.canonical_value for m in members))),
             relation=SHARES_DOMAIN,
             evidence_urls=sources[:25],
             rationale=f"{len(members)} hosts share the registrable domain {base}.",
@@ -263,9 +289,12 @@ MAX_CORRELATION_ROWS = 20000
 
 
 def correlate(
-    index: EntityIndex, indicator_rows: Iterable[Dict[str, Any]], page_count: int = 0
+    index: EntityIndex, indicator_rows: Iterable[Dict[str, Any]], page_count: int = 0,
+    candidate_budget: int = 100_000
 ) -> CheckResult:
     """Run every correlation method and report the candidates."""
+    if candidate_budget < 1:
+        raise ValueError("candidate_budget must be positive")
     result = CheckResult(check_name="Cross-Source Correlation")
 
     rows = list(indicator_rows or [])
@@ -275,13 +304,15 @@ def correlate(
     correlations: List[Correlation] = []
     correlations.extend(_domain_families(index))
     correlations.extend(_identity_hints(index))
-    co_occurrences, site_wide_count = _co_occurrence_pairs(index, page_count)
+    co_occurrences, site_wide_count, coverage = _co_occurrence_pairs(index, page_count, candidate_budget)
     correlations.extend(co_occurrences)
 
     correlations.sort(key=lambda c: (-c.score, c.relation, c.left))
     truncated = max(0, len(correlations) - MAX_CORRELATION_ROWS)
     result.rows = [c.to_dict() for c in correlations[:MAX_CORRELATION_ROWS]]
     result.stats = {
+        **coverage,
+        "partial_coverage": coverage["partial_coverage"] or bool(truncated),
         "correlation_count": len(correlations),
         "rows_written": len(result.rows),
         "rows_truncated": truncated,
@@ -289,6 +320,9 @@ def correlate(
         "total_domains": domain_mapping["total_domains"],
         "top_domains": domain_mapping["top_domains"][:10],
     }
+
+    if coverage["partial_coverage"]:
+        result.notes.append("Candidate pairing coverage is partial; see omitted-pair counts.")
 
     # Only the strongest candidates become findings; the rest stay available in the artifact.
     promoted = 0
