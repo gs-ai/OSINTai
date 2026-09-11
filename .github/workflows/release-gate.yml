@@ -13,7 +13,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  release-gate:
+  platform-gate:
+    name: release-gate (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
@@ -57,3 +58,14 @@ jobs:
         run: |
           python -c "import sys; sys.path.insert(0, 'src'); from osintai import __version__; assert f'# OSINTai v{__version__} ' in open('README.md', encoding='utf-8').read()"
           python run_osintai.py --help
+
+  release-gate:
+    name: release-gate
+    if: ${{ always() }}
+    needs: platform-gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every platform gate
+        env:
+          PLATFORM_GATE_RESULT: ${{ needs.platform-gate.result }}
+        run: test "$PLATFORM_GATE_RESULT" = "success"
