@@ -1,6 +1,6 @@
 <img src="bd800949-d4d1-44ce-849e-ba40837590bc.png" alt="OSINTai Logo" width="100%">
 
-# OSINTai v4 - Advanced Local-First OSINT Web Crawler
+# OSINTai v4.2.0 - Advanced Local-First OSINT Web Crawler
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
@@ -253,7 +253,7 @@ usage: run_osintai.py [-h] [--seed SEED] [--depth DEPTH] [--max MAX]
                       [--no-ollama] [--hunt HUNT] [--hunt-max HUNT_MAX]
                       [--run-id RUN_ID]
 
-OSINTai v4 (async crawling and analysis)
+OSINTai 4.2.0 (async crawling and analysis)
 
 required arguments:
   --seed SEED           Seed URL (or use seed_urls.txt file)
@@ -289,6 +289,80 @@ optional deeper analysis (off by default):
 ```
 
 ### Analysis Layer
+
+**Recover a completed crawl without fetching pages again:**
+
+```bash
+python run_osintai.py --analyze-only 20260909_212714
+```
+
+This mode is fully offline and does not contact Ollama. Each invocation writes to a new
+`data/runs/RUN_ID/reanalysis_*/` directory, preserving the source crawl and earlier reports.
+It can also use `--evaluate` and `--training-export`; model-assisted modes are rejected.
+It uses existing saved page analyses and the latest explicit model-retry overlay. It does
+not regenerate missing model responses.
+
+### Analysis reliability and recovery (4.2)
+
+Live HTML parsing and saved-page extraction run in disposable worker processes with a
+30-second deadline. CPU analysis stages, including indexing and dataset export, have a
+120-second deadline. A failed worker is terminated and reaped; the remaining analysis
+records partial coverage and continues. Raw HTML is saved before live parsing.
+
+```bash
+python run_osintai.py --analyze-only RUN_ID \
+  --analysis-page-timeout 30 --analysis-stage-timeout 120 \
+  --analysis-max-chars 200000 --text-cache-bytes 16000000 \
+  --correlation-pair-budget 100000
+```
+
+Successful page extraction is cached under `RUN_ID/.extraction_cache/`. Keys include the
+scanned-text SHA-256, extractor implementation version, character limit, and truncation
+state. Repeated or interrupted runs reuse valid results. Checkpoints retain secret counts,
+entropy counts, and JWT decode validity; matched secret values and arbitrary JWT claims
+are excluded. Original page captures remain unchanged. Cache hits, invalid entries,
+extraction failures, text coverage, and per-kind indicator omissions are reported.
+
+Text readers use an LRU cache with a byte budget that accounts for strings and entry
+overhead. Correlation examines at most the configured number of co-occurrence pairs.
+Its stage statistics distinguish budget omissions, oversized-page omissions, and output
+row truncation. Common footer entities are excluded from pairing and indexed with sets.
+Hunt offsets refer to original text even when Unicode lowercasing expands characters;
+URLs crossing a snippet boundary are excluded. `url_provenance` distinguishes HTML
+links, prose URLs, and URLs found elsewhere in HTML source.
+
+Model results distinguish `ok`, `empty`, `invalid`, `missing`, `timed_out`, `error`, and
+`skipped`, with per-model counts in the manifest. Explicitly retry unsuccessful or skipped
+saved-page model analyses using local Ollama:
+
+```bash
+python run_osintai.py --retry-model RUN_ID --retry-limit 20 --retry-timeout 60
+python run_osintai.py --analyze-only RUN_ID --evaluate
+```
+
+Retries make no page-fetch requests and issue at most one model request per selected page.
+They preserve original model outputs and publish a new `model_retry_*/` directory. The
+`model_retry_latest.json` pointer selects the overlay used by later offline analyses.
+`--model`, `--prompt-profile`, and `--analysis-max-chars` also apply to retries.
+
+Each analysis first writes a hidden `.analysis_*.incomplete/` staging directory. After
+JSON validation and file flushing, it publishes an immutable `analysis_*/` bundle containing
+the report, result files, summary, optional training export, and manifest. Consult
+`analysis_latest.json` to locate the latest completed bundle; older root-level analysis
+files belong to earlier versions and are not updated. Separate `analysis_*.status.json`
+files record running, failed, or completed attempts. A hard process kill can leave a
+running status and an incomplete directory; these are never selected by the latest pointer.
+Completed bundles can report partial analytical coverage: completion means publication
+succeeded. Manifests include full source-file hashes and configured limits, and a source
+change during analysis prevents publication. POSIX directory metadata is fsynced; Windows
+uses atomic replacements and flushed files without POSIX directory-fsync semantics.
+
+Extraction logs each page before scanning and each analysis stage before starting.
+`--analysis-max-chars 200000` controls the per-page text limit (default: 200,000 characters).
+The summary records truncation and the number of pages beyond the 2,000-page extended-scan
+limit; findings from truncated inputs represent partial coverage. Original saved text is
+retained. Ctrl-C exits with status 130 and a recovery hint instead of a traceback.
+Unicode domain extraction consumes candidate tokens in linear time to avoid regex hangs.
 
 After the crawl completes, OSINTai runs a deterministic analysis stage over what the crawl
 collected. It is fast, works fully offline, and is on by default; `--no-analysis` skips it.
@@ -368,6 +442,10 @@ Each crawl generates a timestamped directory under `data/runs/` with comprehensi
 - **`graph_edges.jsonl`** - Graph relationships and connections
 
 ### Analysis Results (unless `--no-analysis`)
+
+These files live in the completed `analysis_*/` bundle selected by
+`analysis_latest.json`, or under `reanalysis_*/analysis_*/` for offline recovery.
+
 - **`analysis_report.txt`** - Findings separated by origin, correlations, timeline, hypotheses, leads
 - **`findings.jsonl`** - Every finding with priority, evidence, sources, confidence, and next step
 - **`correlations.jsonl`** - Scored candidate entity links with the evidence URLs behind each
@@ -705,7 +783,25 @@ pip install black flake8 pytest mypy
 
 ## Changelog
 
-### v4.0.0 (2026-08-14) - Current Release
+### v4.2.0 (2026-09-10) - Current Release
+- Process deadlines for extraction and expensive analysis stages, with child cleanup
+- Secret-free content-addressed extraction checkpoints and explicit coverage statistics
+- Linear token scans for email, domain, credential, and JWT candidates
+- Per-model response quality counts and bounded saved-page retries
+- Unicode-correct hunt offsets and URL provenance
+- Budgeted correlation, set-backed source tracking, and bounded text caching
+- Validated immutable report bundles, source hashes, and durable attempt status
+- Offline acceptance tests, saved-crawl benchmarks, and a three-platform CI matrix
+
+### v4.1.0 (2026-09-10)
+- Fix catastrophic backtracking in Unicode domain extraction using a linear token scan
+- Add offline `--analyze-only RUN_ID` recovery into a fresh results directory
+- Add per-page progress, bounded text reads, coverage statistics, and extraction failure isolation
+- Preserve HTML element boundaries to prevent concatenated URL/label artifacts
+- Handle interruption cleanly; write complete summary counts and empty result files
+- Respect explicit `--flag=value` profile overrides and reject invalid numeric limits
+
+### v4.0.0 (2026-08-14)
 - **Evidence-Labelled Analysis**: Findings distinguish observed, derived, model-assisted, and hypothetical statements
 - **Expanded Deterministic Checks**: Homoglyphs, sensitive infrastructure, secret presence, generated text, temporal gaps, and outliers
 - **Cross-Source Intelligence**: Entity normalization, evidence-backed candidate correlations, timelines, hypotheses, and pivot leads
@@ -755,4 +851,4 @@ Built for the OSINT community with contributions from security researchers, digi
 
 ---
 
-*OSINTai v4 - Illuminating the shadows of open source intelligence.*
+*OSINTai v4.2.0 - Illuminating the shadows of open source intelligence.*

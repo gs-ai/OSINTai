@@ -12,6 +12,8 @@ without claiming that an unobserved representation appeared in source material.
 from __future__ import annotations
 
 import re
+from heapq import nsmallest
+from .scanners import credentials
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
@@ -50,6 +52,7 @@ API_TOKEN_RE = re.compile(
     r"(?i)(?:api[_-]?key|apikey|access[_-]?token|auth[_-]?token|secret|token)"
     r"[\"'\s:=]{1,5}[\"']?([A-Za-z0-9_\-]{16,64})[\"']?"
 )
+JWT_TOKEN_RE = re.compile(r"[A-Za-z0-9_.-]+")
 JWT_RE = re.compile(r"\b(eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,})\b")
 
 # The crawler's own domain and handle patterns are ASCII-only, which means a lookalike
@@ -57,17 +60,32 @@ JWT_RE = re.compile(r"\b(eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{
 # case homoglyph analysis exists to catch. These patterns accept non-ASCII letters so the
 # check has something to inspect. Kept here rather than in Extractor so the crawl hot path
 # and its output schema stay exactly as they were.
-UNICODE_DOMAIN_RE = re.compile(
-    r"(?:[^\W\d_]|[a-zA-Z0-9-])+(?:\.(?:[^\W\d_]|[a-zA-Z0-9-])+)+", re.UNICODE
-)
+# Consume each token once, then validate it. Requiring a dot in the regex would
+# retry long non-domain words at every offset; overlapping letter alternatives
+# in the old pattern additionally caused exponential backtracking.
+DOMAIN_TOKEN_RE = re.compile(r"(?:[^\W_]|[.\-\u200b\u200c\u200d\ufeff])+", re.UNICODE)
+
+
+def unicode_domains(text: str) -> Iterable[str]:
+    """Scan in O(n) time, yielding Unicode domain candidates for review."""
+    for match in DOMAIN_TOKEN_RE.finditer(text):
+        value = match.group().strip(".")
+        if not _has_non_ascii(value) or "." not in value or len(value) > 253:
+            continue
+        labels = value.split(".")
+        if all(
+            label and len(label) <= 63 and not label.startswith("-")
+            and not label.endswith("-") for label in labels
+        ):
+            yield value
+
+
 UNICODE_HANDLE_RE = re.compile(r"(?<![\w@])@((?:[^\W]|[_.]){3,30})", re.UNICODE)
 
 
 def _has_non_ascii(value: str) -> bool:
     return any(ord(ch) > 0x7E for ch in value)
-CREDENTIAL_PAIR_RE = re.compile(
-    r"(?m)^[ \t]*([\w.+-]+@[\w.-]+\.[A-Za-z]{2,}|[\w.-]{3,32}):(?!//)(\S{6,64})[ \t]*$"
-)
+
 
 # Left-hand values that make a `word:value` line something other than a credential. Without
 # these a bare URL on its own line reads as "user https" with a six-character secret.
@@ -88,12 +106,12 @@ def detect_type(value: str) -> str:
     v = (value or "").strip()
     if not v:
         return USERNAME
-    if _EMAIL_SHAPE.match(v):
+    if len(v) <= 254 and _EMAIL_SHAPE.match(v):
         return EMAIL
     digit_count = sum(1 for ch in v if ch.isdigit())
     if digit_count >= 7 and _PHONE_SHAPE.match(v):
         return PHONE
-    if "@" not in v and _NAME_SHAPE.match(v):
+    if len(v) <= 128 and "@" not in v and _NAME_SHAPE.match(v):
         return NAME
     return USERNAME
 
@@ -167,8 +185,10 @@ class Entity:
     variants: List[str] = field(default_factory=list)
     observed_forms: List[str] = field(default_factory=list)
     count: int = 0
+    _source_set: Set[str] = field(default_factory=set, repr=False)
 
     def __post_init__(self) -> None:
+        self._source_set.update(self.sources)
         if not self.canonical_value:
             self.canonical_value = canonical(self.value, self.kind)
 
@@ -184,7 +204,8 @@ class Entity:
         support a claim about how something was written.
         """
         self.count += 1
-        if source and source not in self.sources:
+        if source and source not in self._source_set:
+            self._source_set.add(source)
             self.sources.append(source)
         raw = (raw or "").strip()
         if raw and raw not in self.observed_forms and len(self.observed_forms) < 12:
@@ -283,39 +304,50 @@ def index_indicators(rows: Iterable[Dict[str, Any]]) -> EntityIndex:
     return index
 
 
-def extract_extended(text: str) -> Dict[str, List[str]]:
+def extract_extended(text: str) -> Dict[str, Any]:
     """Indicator classes beyond the crawler's built-in set.
 
     Kept separate from Extractor so the crawl hot path and its existing output schema are
     untouched; the analysis stage calls this over already-saved page text.
     """
     body = text or ""
-    dates = sorted(set(DATE_RE.findall(body)))[:200]
-    name_candidates = sorted(set(NAME_CANDIDATE_RE.findall(body)))[:200]
-    addresses = sorted({m.strip() for m in ADDRESS_RE.findall(body)})[:100]
-    api_tokens = sorted(set(API_TOKEN_RE.findall(body)))[:100]
-    jwts = sorted(set(JWT_RE.findall(body)))[:50]
-    credential_pairs = [
-        f"{user}:{secret}"
-        for user, secret in CREDENTIAL_PAIR_RE.findall(body)
-        if user.lower() not in _NOT_CREDENTIAL_KEYS
-    ][:100]
-    # Only the non-ASCII ones are worth carrying: the ASCII domains and handles are already
-    # in the crawler's own indicator output.
-    unicode_domains = sorted({
-        m.strip(".") for m in UNICODE_DOMAIN_RE.findall(body) if _has_non_ascii(m)
-    })[:100]
-    unicode_handles = sorted({
-        "@" + m for m in UNICODE_HANDLE_RE.findall(body) if _has_non_ascii(m)
-    })[:100]
+    coverage = {}
+
+    def select(kind, values, limit, unique=True):
+        if unique:
+            pool = set(values)
+            kept = nsmallest(limit, pool)
+            count = len(pool)
+        else:
+            kept, count = [], 0
+            for value in values:
+                count += 1
+                if len(kept) < limit:
+                    kept.append(value)
+        coverage[kind] = {"observed": count, "retained": len(kept), "omitted": count - len(kept)}
+        return kept
+
+    dates = select("dates", DATE_RE.findall(body), 200)
+    name_candidates = select("name_candidates", NAME_CANDIDATE_RE.findall(body), 200)
+    addresses = select("addresses", (m.strip() for m in ADDRESS_RE.findall(body)), 100)
+    api_tokens = select("api_tokens", API_TOKEN_RE.findall(body), 100)
+    jwts = select("jwts", (match.group() for match in JWT_TOKEN_RE.finditer(body)
+                           if len(match.group()) <= 16384 and JWT_RE.fullmatch(match.group())), 50)
+    credential_pairs = select("credential_pairs", (
+        f"{user}:{secret}" for user, secret in credentials(body)
+        if user.lower() not in _NOT_CREDENTIAL_KEYS), 100, unique=False)
+    domain_values = select("unicode_domains", unicode_domains(body), 100)
+    unicode_handles = select("unicode_handles", (
+        "@" + m for m in UNICODE_HANDLE_RE.findall(body) if _has_non_ascii(m)), 100)
 
     return {
+        "extraction_coverage": coverage,
         "dates": dates,
         "name_candidates": name_candidates,
         "addresses": addresses,
         "api_tokens": api_tokens,
         "jwts": jwts,
         "credential_pairs": credential_pairs,
-        "unicode_domains": unicode_domains,
+        "unicode_domains": domain_values,
         "unicode_handles": unicode_handles,
     }

@@ -14,6 +14,8 @@ from .storage import sha1, safe_mkdir, append_jsonl, read_json, write_json
 from .extractor import Extractor
 from .fetcher import AsyncFetcher, FetchRejected
 from .ollama_api import OllamaAPI
+from .model_quality import page_status
+from .isolation import async_isolated_call
 from .dedupe import sha1_text, simhash_64, hamming64
 from .analyzer import compute_page_signal
 from .hunt import hunt_leads
@@ -43,6 +45,13 @@ class PageRecord:
     saved_text_path: str
     simhash64: int
 
+def _extract_page(extractor, url, html, hunt_terms, hunt_limit):
+    title, text = extractor.html_to_text(html)
+    return (title, text, extractor.extract_links(url, html),
+            extractor.extract_indicators(url, text, html),
+            hunt_leads(text, hunt_terms, max_leads=hunt_limit), simhash_64(text))
+
+
 class AsyncCrawler:
     def __init__(
         self,
@@ -61,8 +70,11 @@ class AsyncCrawler:
         model_embed: str,
         hunt_terms: List[str],
         hunt_max_leads: int,
-        prompt_profile: str = STANDARD
+        prompt_profile: str = STANDARD,
+        extraction_timeout_s: float = 30.0
     ):
+        self.extraction_timeout_s = extraction_timeout_s
+        self.extraction_sema = asyncio.Semaphore(2)
         self.prompt_profile = prompt_profile
         self.seed_urls = seed_urls
         self.allowed_seed_hosts = {host_of(url) for url in seed_urls if host_of(url)}
@@ -190,8 +202,8 @@ class AsyncCrawler:
             return False
         return True
 
-    def _dedupe_near(self, text: str) -> Tuple[bool, int]:
-        sh = simhash_64(text)
+    def _dedupe_near(self, text: str, sh=None) -> Tuple[bool, int]:
+        sh = simhash_64(text) if sh is None else sh
         # if very close to any prior simhash, drop it
         for prev in self.simhash_seen[-400:]:
             if hamming64(sh, prev) <= 3:
@@ -243,16 +255,33 @@ class AsyncCrawler:
             return
 
         html = resp.text
-        title, text = self.extractor.html_to_text(html)
+        rid = sha1(url)
+        raw_path = os.path.join(self.raw_dir, f"{rid}.html")
+        # Preserve the response even when a parser defects or exceeds its deadline.
+        with open(raw_path, "w", encoding="utf-8", errors="ignore") as handle:
+            handle.write(html)
+        try:
+            async with self.extraction_sema:
+                title, text, out_links, indicators, hunt, sh = await async_isolated_call(
+                    _extract_page, self.extractor, url, html, self.hunt_terms, self.hunt_max_leads,
+                    timeout_s=self.extraction_timeout_s)
+        except Exception as exc:
+            append_jsonl(os.path.join(self.run_dir, "extraction_failures.jsonl"), {
+                "url": url, "saved_raw_path": raw_path,
+                "status": "timed_out" if isinstance(exc, TimeoutError) else "failed",
+                "error": str(exc),
+            })
+            self.visited.add(url)
+            print(f"[FAIL] extraction {url}: {exc}")
+            return
 
         # near-dup check
-        is_near_dup, sh = self._dedupe_near(text)
+        is_near_dup, sh = self._dedupe_near(text, sh)
         if is_near_dup:
             self.visited.add(url)
             print(f"[DUP]  depth={depth:02d} {url}")
             return
 
-        out_links = self.extractor.extract_links(url, html)
         for lk in out_links:
             self._enqueue(lk, depth + 1)
 
@@ -260,8 +289,6 @@ class AsyncCrawler:
         raw_path = os.path.join(self.raw_dir, f"{rid}.html")
         text_path = os.path.join(self.text_dir, f"{rid}.txt")
 
-        with open(raw_path, "w", encoding="utf-8", errors="ignore") as f:
-            f.write(html)
         with open(text_path, "w", encoding="utf-8", errors="ignore") as f:
             f.write(text)
 
@@ -279,7 +306,6 @@ class AsyncCrawler:
         )
         append_jsonl(self.urls_jsonl, asdict(page))
 
-        indicators = self.extractor.extract_indicators(url, text, html)
         self.indicators_by_url[url] = indicators
         append_jsonl(self.indicators_jsonl, indicators)
 
@@ -288,13 +314,21 @@ class AsyncCrawler:
             prompt = self._analysis_prompt(url, title, text)
             try:
                 async with self.ollama_sema:
-                    analysis = await self.ollama.async_generate_json(self.model_analyze, prompt, timeout_s=140.0)
-            except Exception as e:
-                analysis = {"url": url, "title": title, "error": "ollama_generate_failed", "exception": str(e)}
+                    response = await self.ollama.async_generate_result(self.model_analyze, prompt, timeout_s=140.0)
+                payload = response["payload"]
+                model_status = page_status(payload) if response["status"] == "ok" else response["status"]
+                analysis = dict(payload) if model_status == "ok" else {}
+                analysis.update(url=url, title=title, _model=self.model_analyze, _model_status=model_status)
+            except Exception:
+                analysis = {"url": url, "title": title, "_model": self.model_analyze, "_model_status": "error"}
 
             out_json = os.path.join(self.analysis_dir, f"{rid}.analysis.json")
-            with open(out_json, "w", encoding="utf-8") as f:
-                json.dump(analysis, f, ensure_ascii=False, indent=2)
+            write_json(out_json, analysis)
+
+        else:
+            write_json(os.path.join(self.analysis_dir, f"{rid}.analysis.json"), {
+                "url": url, "title": title, "_model": self.model_analyze, "_model_status": "skipped",
+            })
 
         # embeddings (for clustering later)
         if self.use_ollama and self.ollama and len(text) > 250:
@@ -309,7 +343,6 @@ class AsyncCrawler:
                 print(f"[WARN] embedding write failed for {url}: {exc}")
 
         # hunt mode on every page (lightweight)
-        hunt = hunt_leads(text, self.hunt_terms, max_leads=self.hunt_max_leads) if self.hunt_terms else {"hits": [], "lead_urls": []}
         if hunt.get("hits") or hunt.get("lead_urls"):
             append_jsonl(self.hunt_jsonl, {"url": url, "depth": depth, **hunt})
             for u in hunt.get("lead_urls", [])[: self.hunt_max_leads]:

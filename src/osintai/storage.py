@@ -57,6 +57,25 @@ def write_json(path: str, data: dict):
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temp_path, path)
+        sync_directory(parent)
     finally:
         if temp_path and os.path.exists(temp_path):
             os.unlink(temp_path)
+
+
+def sync_directory(path):
+    """Persist rename metadata on POSIX; Windows provides no directory fsync here."""
+    if os.name != "posix":
+        return
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def sync_file(path):
+    """Flush a completed file through a descriptor Windows permits fsync to use."""
+    with open(path, "rb+") as handle:
+        handle.flush()
+        os.fsync(handle.fileno())

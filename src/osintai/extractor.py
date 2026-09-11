@@ -2,6 +2,7 @@ import re
 from bs4 import BeautifulSoup
 from urllib.parse import urlparse
 from .normalize import absolutize
+from .scanners import emails as scan_emails, domains as scan_domains
 
 
 def _validated_http_url(value: str) -> tuple[str, str] | None:
@@ -19,10 +20,8 @@ def _validated_http_url(value: str) -> tuple[str, str] | None:
 
 
 class Extractor:
-    EMAIL_RE = re.compile(r"\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b")
     PHONE_RE = re.compile(r"\b\d{3}[-.]?\d{3}[-.]?\d{4}\b")
     URL_RE = re.compile(r"https?://[^\s<>\"']+")
-    DOMAIN_RE = re.compile(r"\b(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}\b")
     IP_RE = re.compile(r"\b(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)\b")
     BTC_RE = re.compile(r"\b(?:bc1[ac-hj-np-z02-9]{11,71}|[13][a-km-zA-HJ-NP-Z1-9]{25,34})\b")
     ETH_RE = re.compile(r"\b0x[a-fA-F0-9]{40}\b")
@@ -42,7 +41,8 @@ class Extractor:
             title = soup.title.get_text().strip()
 
         # Get text content
-        text = soup.get_text()
+        # Preserve element boundaries so a URL cannot absorb the next label.
+        text = soup.get_text(separator="\n")
         lines = [line.strip() for line in text.splitlines() if line.strip()]
         return title, "\n".join(lines)
 
@@ -59,13 +59,18 @@ class Extractor:
     def extract_indicators(self, url: str, text: str, html: str) -> dict:
         """Extract various indicators from content."""
         combined = "\n".join([text or "", html or ""])
-        emails = sorted(set(self.EMAIL_RE.findall(combined)))[:200]
+        emails = sorted(set(scan_emails(combined)))[:200]
         phones = sorted(set(self.PHONE_RE.findall(combined)))[:100]
         parsed_urls = {
             parsed
             for match in self.URL_RE.findall(combined)
             if (parsed := _validated_http_url(match)) is not None
         }
+        prose_urls = {parsed[0] for match in self.URL_RE.findall(text or "")
+                      if (parsed := _validated_http_url(match)) is not None}
+        attribute_urls = set(self.extract_links(url, html or ""))
+        parsed_urls.update(parsed for value in attribute_urls
+                           if (parsed := _validated_http_url(value)) is not None)
         urls = sorted(url for url, _ in parsed_urls)[:100]
         btc_addresses = sorted(set(self.BTC_RE.findall(combined)))[:100]
         eth_addresses = sorted({addr.lower() for addr in self.ETH_RE.findall(combined)})[:100]
@@ -75,7 +80,7 @@ class Extractor:
         source = _validated_http_url(url)
         domain = source[1] if source else ""
         domains = {domain} if domain else set()
-        domains.update(self.DOMAIN_RE.findall(combined))
+        domains.update(scan_domains(combined))
         domains.update(hostname for _, hostname in parsed_urls)
 
         # Drop email-only host fragments that appear solely because of address parsing noise.
@@ -89,6 +94,9 @@ class Extractor:
             "emails": emails,
             "phones": phones,
             "urls": urls,
+            "url_provenance": {value: [origin for origin, values in (
+                ("html_attribute", attribute_urls), ("page_prose", prose_urls)
+            ) if value in values] or ["html_source"] for value in urls},
             "ip_addresses": ip_addresses,
             "btc_addresses": btc_addresses,
             "eth_addresses": eth_addresses,

@@ -31,6 +31,7 @@ class OllamaAPI:
 
     def __init__(self, base_url: str = "http://localhost:11434"):
         self.base_url = _validate_local_base_url(base_url)
+        self.response_counts = {}
 
     def generate_json(self, model: str, prompt: str, timeout_s: float = 60.0) -> Optional[Dict[str, Any]]:
         """Generate JSON response from model."""
@@ -38,6 +39,16 @@ class OllamaAPI:
 
     async def async_generate_json(self, model: str, prompt: str, timeout_s: float = 60.0) -> Optional[Dict[str, Any]]:
         """Generate JSON without blocking the crawler event loop."""
+        result = await self.async_generate_result(model, prompt, timeout_s)
+        return result["payload"]
+
+    async def async_generate_result(self, model: str, prompt: str, timeout_s: float = 60.0):
+        """Return payload and a distinct outcome for every attempted model call."""
+        def outcome(status, payload=None):
+            counts = self.response_counts.setdefault(model, {})
+            counts[status] = counts.get(status, 0) + 1
+            return {"status": status, "model": model, "payload": payload}
+
         url = f"{self.base_url}/api/generate"
         payload = {
             "model": model,
@@ -55,10 +66,23 @@ class OllamaAPI:
                 r = await client.post(url, json=payload)
             r.raise_for_status()
             data = r.json()
-            response_text = data.get("response", "")
-            return self._extract_json(response_text)
+            if not isinstance(data, dict) or "response" not in data:
+                return outcome("missing")
+            response_text = data["response"]
+            if not isinstance(response_text, str):
+                return outcome("invalid")
+            if not response_text.strip():
+                return outcome("empty")
+            parsed = self._extract_json(response_text)
+            if parsed == {}:
+                return outcome("empty")
+            return outcome("ok", parsed) if isinstance(parsed, dict) else outcome("invalid")
+        except httpx.TimeoutException:
+            return outcome("timed_out")
+        except (ValueError, TypeError):
+            return outcome("invalid")
         except Exception:
-            return None
+            return outcome("error")
 
     def embed(self, model: str, input_text: str, timeout_s: float = 30.0) -> Optional[List[float]]:
         """Generate embeddings for text."""

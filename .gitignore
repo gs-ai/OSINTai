@@ -27,8 +27,7 @@ id_ed25519
 *.ovpn
 
 # Local OSINT inputs/outputs may contain PII, targets, proxies, or findings
-data/runs/
-data/cache/
+/data/
 cases/
 /OSINTAI_SYNTHESIS/
 /TODO
@@ -62,6 +61,7 @@ build/
 .pytest_cache/
 .mypy_cache/
 .tox/
+.test-tmp/
 
 # IDEs
 .vscode/

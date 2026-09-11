@@ -145,7 +145,7 @@ class ExtractorRegressionTests(unittest.TestCase):
             "eth_count", "social_count",
         }
         indicators = Extractor().extract_indicators("https://one.test/", "text", "<html></html>")
-        self.assertEqual(set(indicators), expected)
+        self.assertEqual(set(indicators), expected | {"url_provenance"})
 
 
 class NoTrainingInOSINTaiTests(unittest.TestCase):
@@ -236,7 +236,7 @@ class EntityTests(unittest.TestCase):
     def test_extended_extraction_finds_new_indicator_classes(self):
         extras = entities.extract_extended(
             "Meeting on 2024-01-31 with John Martinez at 4421 Troost Ave.\n"
-            "api_key: AKIAIOSFODNN7EXAMPLEKEY123\n"
+            "api_key: SYNTHETIC_TEST_TOKEN_0123456789\n"
         )
         self.assertIn("2024-01-31", extras["dates"])
         self.assertIn("John Martinez", extras["name_candidates"])
@@ -701,6 +701,10 @@ def _build_run(run_dir: str) -> None:
             }, handle)
 
 
+def _deliberate_stage_failure(index):
+    raise RuntimeError("deliberate stage failure")
+
+
 class PipelineTests(unittest.TestCase):
     def test_full_offline_analysis_produces_every_artifact(self):
         with tempfile.TemporaryDirectory() as run_dir:
@@ -713,7 +717,7 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(output.errors, [])
             for name in ("findings.jsonl", "hypotheses.jsonl", "leads.jsonl",
                          "correlations.jsonl", "timeline.jsonl", "analysis_summary.json"):
-                self.assertTrue(os.path.exists(os.path.join(run_dir, name)), name)
+                self.assertTrue(os.path.exists(output.artifacts[name.split(".")[0]]), name)
 
             checks = {f.check for f in output.findings}
             self.assertIn("Unicode / Homoglyph", checks)          # Cyrillic domain
@@ -746,9 +750,7 @@ class PipelineTests(unittest.TestCase):
         from osintai import pipeline as pipeline_module
 
         original = pipeline_module.patterns.check_homoglyphs
-        pipeline_module.patterns.check_homoglyphs = lambda index: (_ for _ in ()).throw(
-            RuntimeError("deliberate stage failure")
-        )
+        pipeline_module.patterns.check_homoglyphs = _deliberate_stage_failure
         try:
             with tempfile.TemporaryDirectory() as run_dir:
                 _build_run(run_dir)

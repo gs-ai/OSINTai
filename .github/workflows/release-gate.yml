@@ -13,8 +13,13 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  release-gate:
-    runs-on: ubuntu-latest
+  platform-gate:
+    name: release-gate (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     steps:
       - name: Check out repository
@@ -41,7 +46,7 @@ jobs:
         run: python -W error::ResourceWarning -m unittest discover -s tests -v
 
       - name: Compile Python sources
-        run: python -m py_compile run_osintai.py src/osintai/*.py tests/*.py
+        run: python -m compileall -q src tests run_osintai.py
 
       - name: Run security analysis
         run: bandit -q -r src run_osintai.py -ll -ii
@@ -51,5 +56,16 @@ jobs:
 
       - name: Verify release identity
         run: |
-          python run_osintai.py --version | grep -Fx "OSINTai 4.0.0"
-          python run_osintai.py --help >/dev/null
+          python -c "import sys; sys.path.insert(0, 'src'); from osintai import __version__; assert f'# OSINTai v{__version__} ' in open('README.md', encoding='utf-8').read()"
+          python run_osintai.py --help
+
+  release-gate:
+    name: release-gate
+    if: ${{ always() }}
+    needs: platform-gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every platform gate
+        env:
+          PLATFORM_GATE_RESULT: ${{ needs.platform-gate.result }}
+        run: test "$PLATFORM_GATE_RESULT" = "success"
