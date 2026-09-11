@@ -57,7 +57,7 @@ empty artifacts, numeric validation, and explicit profile overrides.
 See `tests/test_enhancements.py` for deterministic offline acceptance checks and
 `tests/benchmark_analysis.py` for saved-crawl runtime and memory measurements. CI now
 runs the release gate on macOS, Linux, and Windows. Local verification was performed on
-macOS with Python 3.12; the Linux/Windows matrix needs to execute in CI.
+macOS with Python 3.12.
 
 Measured results are recorded in `BENCHMARKS.md`. RSS figures separate parent memory
 from the maximum child RSS; they are not a measured concurrent process-tree total.

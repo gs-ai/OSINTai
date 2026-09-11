@@ -24,7 +24,7 @@ from osintai.ollama_api import OllamaAPI
 import httpx
 from osintai.model_retry import retry_saved
 from osintai.pipeline import AnalysisOptions, RunArtifacts, analyze_run
-from osintai.storage import sha1, write_json
+from osintai.storage import sha1, sync_file, write_json
 from osintai.scanners import credentials
 
 
@@ -101,6 +101,12 @@ class IsolationTests(unittest.TestCase):
 
 
 class EnhancementTests(unittest.TestCase):
+    def test_completed_file_can_be_synced_through_writable_descriptor(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "validated.json"
+            path.write_bytes(b"validated")
+            sync_file(path)
+
     def test_adversarial_patterns_have_external_deadline(self):
         code = """
 from osintai.extractor import Extractor

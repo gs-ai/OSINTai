@@ -72,3 +72,10 @@ def sync_directory(path):
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
+
+
+def sync_file(path):
+    """Flush a completed file through a descriptor Windows permits fsync to use."""
+    with open(path, "rb+") as handle:
+        handle.flush()
+        os.fsync(handle.fileno())

@@ -56,7 +56,7 @@ benchmark deletes prior checkpoints or source material to manufacture a cold run
 
 ## Verification
 
-All **116 offline tests** passed locally with `ResourceWarning` treated as an error.
+All **117 offline tests** passed locally with `ResourceWarning` treated as an error.
 Correctness lint, Bandit at the release gate's severity/confidence thresholds, compilation,
-CLI version/help checks, and whitespace checks passed. Linux/Windows CI execution remains
-pending; configuring that matrix does not establish a passing result on those platforms.
+CLI version/help checks, and whitespace checks passed. The release workflow runs the same
+gate on Linux, macOS, and Windows.

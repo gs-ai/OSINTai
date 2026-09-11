@@ -12,7 +12,7 @@ from pathlib import Path
 
 from . import __version__
 from .checkpoints import EXTRACTOR_VERSION
-from .storage import write_json, sync_directory
+from .storage import sync_directory, sync_file, write_json
 
 
 def source_hashes(source):
@@ -121,7 +121,7 @@ def publish_analysis(source, options, ollama, run_id, log, output_dir):
                     for line in handle:
                         if line.strip():
                             json.loads(line)
-                os.fsync(handle.fileno())
+            sync_file(path)
         for directory in staging.rglob("*"):
             if directory.is_dir():
                 sync_directory(directory)
