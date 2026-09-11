@@ -28,7 +28,8 @@ All seven enhancement areas from the 4.1.0 follow-up list are implemented:
    counts, and optional stage response counts. `--retry-model RUN_ID --retry-limit 20
    --retry-timeout 60` retries unsuccessful/skipped saved pages through local Ollama,
    without fetching pages or overwriting original analyses. Later offline runs use the
-   published `model_retry_latest.json` overlay.
+   published `model_retry_latest.json` overlay only when its resolved paths stay inside
+   the run, its manifest is completed, and its source hashes still match current inputs.
 5. **Hunt offsets and URL provenance.** Unicode expansion maps matches back to original
    start/end offsets. URL detection uses original text and rejects URLs crossing a snippet
    boundary. Indicator provenance identifies `html_attribute`, `page_prose`, and

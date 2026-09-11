@@ -15,8 +15,26 @@ from .checkpoints import EXTRACTOR_VERSION
 from .storage import sync_directory, sync_file, write_json
 
 
+def _hash_paths(root, paths):
+    """Hash files only after their resolved paths remain inside the saved run."""
+    root = Path(root).resolve()
+    hashes = {}
+    for path in paths:
+        resolved = path.resolve()
+        if not resolved.is_relative_to(root):
+            raise RuntimeError(f"Source artifact escapes saved run: {path}")
+        if not resolved.is_file():
+            continue
+        digest = hashlib.sha256()
+        with resolved.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        hashes[str(path.relative_to(root))] = digest.hexdigest()
+    return hashes
+
+
 def source_hashes(source):
-    root = Path(source)
+    root = Path(source).resolve()
     files = [
         root / name
         for name in (
@@ -32,16 +50,16 @@ def source_hashes(source):
         files.extend(sorted((root / name).glob("*")))
     # Retry outputs are inputs whenever the reader overlays saved model responses.
     files.extend(sorted(root.glob("model_retry_*/analysis/*.json")))
-    hashes = {}
-    for path in files:
-        if not path.is_file():
-            continue
-        digest = hashlib.sha256()
-        with path.open("rb") as handle:
-            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-                digest.update(chunk)
-        hashes[str(path.relative_to(root))] = digest.hexdigest()
-    return hashes
+    return _hash_paths(root, files)
+
+
+def retry_source_hashes(source):
+    """Hash only immutable inputs used to select and prompt model retries."""
+    root = Path(source).resolve()
+    files = [root / "urls_crawled.jsonl", root / "run_manifest.json"]
+    files.extend(sorted((root / "pages_text").glob("*")))
+    files.extend(sorted((root / "analysis").glob("*")))
+    return _hash_paths(root, files)
 
 
 def publish_analysis(source, options, ollama, run_id, log, output_dir):

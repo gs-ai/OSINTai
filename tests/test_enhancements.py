@@ -24,6 +24,7 @@ from osintai.ollama_api import OllamaAPI
 import httpx
 from osintai.model_retry import retry_saved
 from osintai.pipeline import AnalysisOptions, RunArtifacts, analyze_run
+from osintai.publication import retry_source_hashes, source_hashes
 from osintai.storage import sha1, sync_file, write_json
 from osintai.scanners import credentials
 
@@ -43,7 +44,7 @@ def large_result():
 
 def make_run(root, texts=("John Smith 2026-01-01",)):
     root = Path(root)
-    (root / "pages_text").mkdir(exist_ok=True)
+    (root / "pages_text").mkdir(parents=True, exist_ok=True)
     records = []
     for i, text in enumerate(texts):
         url = f"https://example.test/{i}"
@@ -247,6 +248,66 @@ assert 'a@example.test' in Extractor().extract_indicators('https://example.test'
                 write_json(str(analysis / f"{sha1(row['url'])}.analysis.json"), payload)
             rows = RunArtifacts(directory).model_records()
             self.assertEqual([r["_model_status"] for r in rows], ["empty", "timed_out", "invalid", "missing"])
+
+    def test_retry_overlay_rejects_external_symlink(self):
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory)
+            run = parent / "run"
+            outside = parent / "outside"
+            records = make_run(run)
+            (outside / "analysis").mkdir(parents=True)
+            write_json(
+                str(outside / "analysis" / f"{sha1(records[0]['url'])}.analysis.json"),
+                {
+                    "summary": "outside",
+                    "key_entities": [],
+                    "key_locations": [],
+                    "key_dates": [],
+                    "keywords": [],
+                    "risk_flags": [],
+                    "actionable_leads": [],
+                },
+            )
+            write_json(
+                str(outside / "run_manifest.json"),
+                {"status": "completed", "source_hashes": retry_source_hashes(run)},
+            )
+            try:
+                (run / "model_retry_escape").symlink_to(outside, target_is_directory=True)
+            except OSError as exc:
+                self.skipTest(f"directory symlinks unavailable: {exc}")
+            write_json(str(run / "model_retry_latest.json"), {"directory": "model_retry_escape"})
+            self.assertEqual(RunArtifacts(str(run)).model_records()[0]["_model_status"], "missing")
+            with self.assertRaisesRegex(RuntimeError, "escapes saved run"):
+                source_hashes(run)
+
+    def test_retry_overlay_requires_current_source_hashes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run = Path(directory)
+            records = make_run(run)
+            retry = run / "model_retry_stale"
+            current_hashes = retry_source_hashes(run)
+            (retry / "analysis").mkdir(parents=True)
+            write_json(
+                str(retry / "analysis" / f"{sha1(records[0]['url'])}.analysis.json"),
+                {
+                    "summary": "stale",
+                    "key_entities": [],
+                    "key_locations": [],
+                    "key_dates": [],
+                    "keywords": [],
+                    "risk_flags": [],
+                    "actionable_leads": [],
+                },
+            )
+            write_json(
+                str(retry / "run_manifest.json"),
+                {"status": "completed", "source_hashes": current_hashes},
+            )
+            write_json(str(run / "model_retry_latest.json"), {"directory": retry.name})
+            self.assertEqual(RunArtifacts(str(run)).model_records()[0]["_model_status"], "ok")
+            (run / "pages_text" / f"{sha1(records[0]['url'])}.txt").write_text("changed", encoding="utf-8")
+            self.assertEqual(RunArtifacts(str(run)).model_records()[0]["_model_status"], "missing")
 
     def test_model_transport_distinguishes_failures(self):
         async def scenario():

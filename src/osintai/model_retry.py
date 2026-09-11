@@ -10,7 +10,7 @@ from pathlib import Path
 from .model_quality import page_status, summarize
 from .pipeline import RunArtifacts
 from .prompts import page_prompt
-from .publication import source_hashes
+from .publication import retry_source_hashes
 from .storage import write_json, sha1
 
 
@@ -31,7 +31,7 @@ async def retry_saved(
     write_json(str(status_path), status)
     outcomes = []
     try:
-        hashes = source_hashes(str(source))
+        hashes = retry_source_hashes(str(source))
         # Preserve previous retry results when advancing the pointer after a small batch.
         for row in records:
             write_json(str(staging / "analysis" / f"{sha1(row['url'])}.analysis.json"), row)
@@ -56,7 +56,7 @@ async def retry_saved(
             payload.update(url=url, _model=model, _model_status=status_value)
             write_json(str(staging / "analysis" / f"{sha1(url)}.analysis.json"), payload)
             outcomes.append(payload)
-        if source_hashes(str(source)) != hashes:
+        if retry_source_hashes(str(source)) != hashes:
             raise RuntimeError("Source artifacts changed during retry")
         status.update(
             status="completed",

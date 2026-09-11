@@ -154,7 +154,7 @@ class RunArtifacts:
                     text = handle.read(self.max_text_chars + 1)
                     if len(text) > self.max_text_chars:
                         self.truncated_urls.add(url)
-                        text = text[:self.max_text_chars]
+                        text = text[: self.max_text_chars]
             except OSError:
                 self.unreadable_urls.add(url)
         else:
@@ -171,28 +171,58 @@ class RunArtifacts:
         return text
 
     def coverage(self):
-        return {"truncated": sorted(self.truncated_urls), "missing": sorted(self.missing_urls),
-                "unreadable": sorted(self.unreadable_urls), "cache_peak_bytes": self.cache_peak_bytes,
-                "cache_evictions": self.cache_evictions}
+        return {
+            "truncated": sorted(self.truncated_urls),
+            "missing": sorted(self.missing_urls),
+            "unreadable": sorted(self.unreadable_urls),
+            "cache_peak_bytes": self.cache_peak_bytes,
+            "cache_evictions": self.cache_evictions,
+        }
 
     def model_records(self):
+        from pathlib import Path
+
+        from .publication import retry_source_hashes
+
         manifest = read_json(os.path.join(self.run_dir, "run_manifest.json"))
         default_model = manifest.get("analysis_model", "unknown") if isinstance(manifest, dict) else "unknown"
         latest = read_json(os.path.join(self.run_dir, "model_retry_latest.json"))
         retry_name = latest.get("directory", "") if isinstance(latest, dict) else ""
-        # The pointer is local metadata, never an arbitrary path to read.
-        retry_dir = os.path.join(self.run_dir, retry_name, "analysis") if retry_name.startswith("model_retry_") and os.path.basename(retry_name) == retry_name else ""
+        run_root = Path(self.run_dir).resolve()
+        retry_dir = None
+        if retry_name.startswith("model_retry_") and os.path.basename(retry_name) == retry_name:
+            candidate = (run_root / retry_name).resolve()
+            if candidate.parent == run_root and candidate.is_dir():
+                analysis_dir = (candidate / "analysis").resolve()
+                retry_manifest_path = (candidate / "run_manifest.json").resolve()
+                if (
+                    analysis_dir.is_relative_to(candidate)
+                    and analysis_dir.is_dir()
+                    and retry_manifest_path.parent == candidate
+                    and retry_manifest_path.is_file()
+                ):
+                    retry_manifest = read_json(str(retry_manifest_path))
+                    if retry_manifest.get("status") == "completed" and retry_manifest.get(
+                        "source_hashes"
+                    ) == retry_source_hashes(str(run_root)):
+                        retry_dir = analysis_dir
+        original_analysis_dir = Path(self.analysis_dir).resolve()
+        original_analysis_allowed = original_analysis_dir.is_relative_to(run_root)
+        allowed_parents = {original_analysis_dir}
+        if retry_dir:
+            allowed_parents.add(retry_dir)
         rows = []
         for url in dict.fromkeys(record.get("url") for record in self.page_records() if record.get("url")):
             name = f"{sha1(url)}.analysis.json"
-            path = os.path.join(self.analysis_dir, name)
-            if retry_dir and os.path.isfile(os.path.join(retry_dir, name)):
-                path = os.path.join(retry_dir, name)
-            if not os.path.isfile(path):
+            path = (original_analysis_dir / name).resolve() if original_analysis_allowed else None
+            retry_path = (retry_dir / name).resolve() if retry_dir else None
+            if retry_path and retry_path.parent == retry_dir and retry_path.is_file():
+                path = retry_path
+            if path is None or path.parent not in allowed_parents or not path.is_file():
                 payload, status = {}, "missing"
             else:
                 try:
-                    with open(path, encoding="utf-8") as handle:
+                    with path.open(encoding="utf-8") as handle:
                         payload = json.load(handle)
                     status = page_status(payload)
                 except (OSError, ValueError):
@@ -209,8 +239,11 @@ class RunArtifacts:
 
 
 def _run_stage(
-    name: str, fn: Callable[[], CheckResult], output: AnalysisOutput, log: Callable[[str], None],
-    timeout_s: float = 120.0
+    name: str,
+    fn: Callable[[], CheckResult],
+    output: AnalysisOutput,
+    log: Callable[[str], None],
+    timeout_s: float = 120.0,
 ) -> Optional[CheckResult]:
     """Execute one stage under isolation. A stage failure is reported, never propagated."""
     started = time.time()
@@ -303,8 +336,9 @@ def _analyze_run(
                 except OSError as exc:
                     output.errors.append(f"checkpoint write failed for {url}: {exc}; extracted results retained")
         except Exception as exc:
-            extraction_failures.append({"url": url, "status": "timed_out" if isinstance(exc, TimeoutError) else "failed",
-                                        "error": str(exc)})
+            extraction_failures.append(
+                {"url": url, "status": "timed_out" if isinstance(exc, TimeoutError) else "failed", "error": str(exc)}
+            )
             output.errors.append(f"extended extraction failed for {url}: {exc}")
             log(f"[FAIL] extraction {url}: {exc}")
             continue
@@ -337,28 +371,41 @@ def _analyze_run(
     run_stage("homoglyph analysis", partial(patterns.check_homoglyphs, index), output, log)
     run_stage(
         "sensitive infrastructure",
-        partial(patterns.check_sensitive_infrastructure, index), output, log,
+        partial(patterns.check_sensitive_infrastructure, index),
+        output,
+        log,
     )
     run_stage(
         "secret exposure",
-        partial(patterns.check_secret_exposure, page_extras), output, log,
+        partial(patterns.check_secret_exposure, page_extras),
+        output,
+        log,
     )
     run_stage(
         "generated-content fingerprint",
-        partial(_text_stage, "generated", artifacts.run_dir, options, page_records), output, log,
+        partial(_text_stage, "generated", artifacts.run_dir, options, page_records),
+        output,
+        log,
     )
     run_stage(
         "cross-source correlation",
         partial(correlation_module.correlate, index, indicator_rows, len(page_records), options.candidate_pair_budget),
-        output, log,
+        output,
+        log,
     )
 
-    temporal_result = run_stage("temporal analysis", partial(_temporal_stage, page_records, content_dates, options.gap_days), output, log)
-    _write_rows(os.path.join(run_dir, "timeline.jsonl"), temporal_result.stats.pop("events", []) if temporal_result else [])
+    temporal_result = run_stage(
+        "temporal analysis", partial(_temporal_stage, page_records, content_dates, options.gap_days), output, log
+    )
+    _write_rows(
+        os.path.join(run_dir, "timeline.jsonl"), temporal_result.stats.pop("events", []) if temporal_result else []
+    )
     output.artifacts["timeline"] = os.path.join(run_dir, "timeline.jsonl")
     run_stage(
         "recurring signals and outliers",
-        partial(patterns.check_recurring_and_outliers, index, page_scores), output, log,
+        partial(patterns.check_recurring_and_outliers, index, page_scores),
+        output,
+        log,
     )
 
     # Optional model-assisted stages. Nothing below runs unless it was asked for.
@@ -367,20 +414,24 @@ def _analyze_run(
         evaluation_result = run_stage(
             "analysis quality evaluation",
             partial(_text_stage, "evaluation", artifacts.run_dir, options, analyses),
-            output, log,
+            output,
+            log,
         )
 
     if options.deep and options.use_ollama and ollama is not None:
         run_stage(
             "deep analysis",
             partial(_deep_analysis, ollama, options, index, output, page_scores, analyses, run_id),
-            output, log,
+            output,
+            log,
         )
 
     if options.cross_check_models and options.use_ollama and ollama is not None:
         run_stage(
             "multi-model cross-check",
-            partial(_cross_check, ollama, options, analyses), output, log,
+            partial(_cross_check, ollama, options, analyses),
+            output,
+            log,
         )
 
     # Hypotheses derive from the findings that now exist, so this runs after every stage
@@ -390,8 +441,17 @@ def _analyze_run(
 
     if options.training_export and evaluation_result is not None:
         try:
-            summary = isolated_call(_training_stage, run_dir, artifacts.run_dir, options,
-                evaluation_result, analyses_by_url, page_records, run_id, timeout_s=options.stage_deadline_s)
+            summary = isolated_call(
+                _training_stage,
+                run_dir,
+                artifacts.run_dir,
+                options,
+                evaluation_result,
+                analyses_by_url,
+                page_records,
+                run_id,
+                timeout_s=options.stage_deadline_s,
+            )
             artifacts.truncated_urls.update(summary["text_coverage"]["truncated"])
             artifacts.missing_urls.update(summary["text_coverage"]["missing"])
             artifacts.unreadable_urls.update(summary["text_coverage"]["unreadable"])
@@ -400,6 +460,7 @@ def _analyze_run(
             log(f"[OK]   training dataset exported: {summary['dir']}")
         except Exception as exc:
             import shutil
+
             shutil.rmtree(os.path.join(run_dir, "training_export"), ignore_errors=True)
             output.errors.append(f"training export failed: {exc}")
             log(f"[FAIL] training export -> {exc}")
@@ -417,7 +478,8 @@ def _analyze_run(
         artifacts.missing_urls.update(coverage.get("missing", []))
         artifacts.unreadable_urls.update(coverage.get("unreadable", []))
     output.stats["indicator_values_omitted"] = sum(
-        count["omitted"] for extras in page_extras.values() for count in extras.get("extraction_coverage", {}).values())
+        count["omitted"] for extras in page_extras.values() for count in extras.get("extraction_coverage", {}).values()
+    )
     output.stats["extraction_failures"] = extraction_failures
     output.stats["extraction_cache"] = {"hits": cache.hits, "misses": cache.misses, "invalid": cache.invalid}
     output.stats["text_coverage"] = artifacts.coverage()
@@ -432,10 +494,19 @@ def _analyze_run(
         )
         log(f"[WARN] {output.errors[-1]}")
     output.stats["model_coverage_partial"] = any(
-        output.stats["model_responses"]["counts"][status] for status in ("empty", "invalid", "missing", "timed_out", "error"))
-    output.stats["partial_coverage"] = bool(output.errors or extraction_failures or artifacts.missing_urls or artifacts.unreadable_urls
-        or output.stats["pages_over_scan_limit"] or output.stats["indicator_values_omitted"]
-        or ((options.use_ollama or options.evaluate) and output.stats["model_coverage_partial"]) or any(r.errors or r.stats.get("partial_coverage") for r in output.results))
+        output.stats["model_responses"]["counts"][status]
+        for status in ("empty", "invalid", "missing", "timed_out", "error")
+    )
+    output.stats["partial_coverage"] = bool(
+        output.errors
+        or extraction_failures
+        or artifacts.missing_urls
+        or artifacts.unreadable_urls
+        or output.stats["pages_over_scan_limit"]
+        or output.stats["indicator_values_omitted"]
+        or ((options.use_ollama or options.evaluate) and output.stats["model_coverage_partial"])
+        or any(r.errors or r.stats.get("partial_coverage") for r in output.results)
+    )
     _write_artifacts(run_dir, output)
     return output
 
@@ -462,18 +533,17 @@ def _deep_analysis(
     context = {
         "run_id": run_id,
         "pages_analyzed": len(page_scores),
-        "top_pages": [
-            {"url": p.get("url"), "score": p.get("score"), "summary": p.get("summary")}
-            for p in top_pages
-        ],
+        "top_pages": [{"url": p.get("url"), "score": p.get("score"), "summary": p.get("summary")} for p in top_pages],
         "recurring_entities": [
-            {"kind": e.kind, "value": e.value, "sources": len(e.sources)}
-            for e in index.multi_source(minimum=2)[:40]
+            {"kind": e.kind, "value": e.value, "sources": len(e.sources)} for e in index.multi_source(minimum=2)[:40]
         ],
         "deterministic_findings": [
             {
-                "check": f.check, "item": f.item, "reason": f.reason,
-                "priority": f.priority, "origin": f.origin,
+                "check": f.check,
+                "item": f.item,
+                "reason": f.reason,
+                "priority": f.priority,
+                "origin": f.origin,
             }
             for f in sort_findings(output.findings)[:60]
         ],
@@ -486,29 +556,25 @@ def _deep_analysis(
     for pass_number in range(passes):
         prompt = deep_analysis_prompt(context)
         try:
-            payload = asyncio.run(
-                ollama.async_generate_json(options.model, prompt, timeout_s=180.0)
-            )
+            payload = asyncio.run(ollama.async_generate_json(options.model, prompt, timeout_s=180.0))
         except RuntimeError as exc:
             result.errors.append(f"deep analysis pass {pass_number + 1} could not run: {exc}")
             break
         if not payload:
-            result.errors.append(
-                f"deep analysis pass {pass_number + 1} returned no parseable response."
-            )
+            result.errors.append(f"deep analysis pass {pass_number + 1} returned no parseable response.")
             break
 
-        result.rows.append({
-            "pass": pass_number + 1,
-            "model": options.model,
-            "assessment": payload.get("assessment", ""),
-            "cross_source_observations": payload.get("cross_source_observations", []),
-            "recommended_follow_up": payload.get("recommended_follow_up", []),
-            "gaps": payload.get("gaps", []),
-        })
-        result.hypotheses.extend(
-            hypotheses_module.from_model(payload, options.model, sources)
+        result.rows.append(
+            {
+                "pass": pass_number + 1,
+                "model": options.model,
+                "assessment": payload.get("assessment", ""),
+                "cross_source_observations": payload.get("cross_source_observations", []),
+                "recommended_follow_up": payload.get("recommended_follow_up", []),
+                "gaps": payload.get("gaps", []),
+            }
         )
+        result.hypotheses.extend(hypotheses_module.from_model(payload, options.model, sources))
 
         if pass_number + 1 >= passes:
             break
@@ -523,8 +589,11 @@ def _deep_analysis(
     if payload is None and not result.errors:
         result.errors.append("Deep analysis produced no output.")
 
-    result.stats = {"passes_run": len(result.rows), "model": options.model,
-                    "model_response_counts": getattr(ollama, "response_counts", {})}
+    result.stats = {
+        "passes_run": len(result.rows),
+        "model": options.model,
+        "model_response_counts": getattr(ollama, "response_counts", {}),
+    }
     result.notes.append(
         f"Deep analysis ran {len(result.rows)} model pass(es) with {options.model or 'the configured model'}. "
         "All output is model-generated interpretation, labelled as such, and is not observed fact."
@@ -578,28 +647,29 @@ def _write_artifacts(run_dir: str, output: AnalysisOutput) -> None:
         _write_rows(path, rows)
         output.artifacts[name.split(".")[0]] = path
 
-    correlations = next(
-        (r for r in output.results if r.check_name == "Cross-Source Correlation"), None
-    )
+    correlations = next((r for r in output.results if r.check_name == "Cross-Source Correlation"), None)
     path = os.path.join(run_dir, "correlations.jsonl")
     _write_rows(path, correlations.rows if correlations else [])
     output.artifacts["correlations"] = path
 
     summary_path = os.path.join(run_dir, "analysis_summary.json")
-    write_json(summary_path, {
-        "stages": [
-            {
-                "check_name": r.check_name,
-                "findings": r.finding_count,
-                "notes": r.notes,
-                "errors": r.errors,
-                "stats": r.stats,
-            }
-            for r in output.results
-        ],
-        "stats": output.stats,
-        "errors": output.errors,
-    })
+    write_json(
+        summary_path,
+        {
+            "stages": [
+                {
+                    "check_name": r.check_name,
+                    "findings": r.finding_count,
+                    "notes": r.notes,
+                    "errors": r.errors,
+                    "stats": r.stats,
+                }
+                for r in output.results
+            ],
+            "stats": output.stats,
+            "errors": output.errors,
+        },
+    )
     output.artifacts["analysis_summary"] = summary_path
 
 
@@ -636,8 +706,14 @@ def _lead_stage(index, limit):
 def analyze_run(run_dir, options, ollama=None, run_id="", log=None, output_dir=None):
     """Publish a validated immutable bundle, then atomically advance its pointer."""
     from .publication import publish_analysis
-    for value in (options.max_text_chars, options.candidate_pair_budget, options.text_cache_bytes,
-                  options.page_deadline_s, options.stage_deadline_s):
+
+    for value in (
+        options.max_text_chars,
+        options.candidate_pair_budget,
+        options.text_cache_bytes,
+        options.page_deadline_s,
+        options.stage_deadline_s,
+    ):
         if not math.isfinite(value) or value <= 0:
             raise ValueError("analysis limits and deadlines must be finite and positive")
     return publish_analysis(run_dir, options, ollama, run_id, log, output_dir)
@@ -653,7 +729,8 @@ def _training_stage(destination, source, options, evaluation_result, analyses_by
             return ""
         return page_prompt(url, records_by_url.get(url, {}).get("title", ""), text, options.prompt_profile)
 
-    summary = training_export_module.export(destination, evaluation_result, analyses_by_url,
-                                            prompt_loader, model=options.model, run_id=run_id)
+    summary = training_export_module.export(
+        destination, evaluation_result, analyses_by_url, prompt_loader, model=options.model, run_id=run_id
+    )
     summary["text_coverage"] = reader.coverage()
     return summary

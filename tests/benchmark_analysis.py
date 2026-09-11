@@ -43,6 +43,7 @@ def main():
         "stats": output.stats,
         "errors": output.errors,
     }
+    destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_text(json.dumps(result, indent=2), encoding="utf-8")
 
 
