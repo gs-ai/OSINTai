@@ -9,13 +9,13 @@ import tempfile
 import math
 from urllib.parse import urlparse
 
-from osintai.storage import safe_mkdir, now_run_id, load_lines, write_json
+from osintai.storage import safe_mkdir, now_run_id, load_lines, write_json, read_json
 from osintai.extractor import Extractor
 from osintai.proxy_pool import ProxyPool
 from osintai.fetcher import AsyncFetcher
-from osintai.crawler import AsyncCrawler
+from osintai.crawler import AsyncCrawler, UNLIMITED_DEPTH
 from osintai.scoring import rank_pages
-from osintai.report import write_report, write_analysis_report
+from osintai.report import write_report
 from osintai.ollama_api import OllamaAPI
 from osintai.pipeline import AnalysisOptions, analyze_run
 from osintai.prompts import PAGE_PROFILES, STANDARD
@@ -35,6 +35,49 @@ RUN_PROFILES = {
         "per_host": 3,
     },
 }
+
+MIN_RUNTIME_MIN, MAX_RUNTIME_MIN = 1, 360
+# Safety ceilings applied to timed expansion unless the operator states otherwise.
+EXPAND_DEFAULTS = {"max": 50_000, "max_per_host": 500}
+
+
+def _flag_given(argv: list[str], flag: str) -> bool:
+    return any(arg == flag or arg.startswith(flag + "=") for arg in argv)
+
+
+def _parse_runtime(value) -> float:
+    """Runtime in minutes, restricted to the supported 1-360 window."""
+    try:
+        minutes = float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"runtime must be a number of minutes, got {value!r}") from None
+    if not math.isfinite(minutes) or not MIN_RUNTIME_MIN <= minutes <= MAX_RUNTIME_MIN:
+        raise ValueError(
+            f"runtime must be between {MIN_RUNTIME_MIN} and {MAX_RUNTIME_MIN} minutes"
+        )
+    return minutes
+
+
+def _prompt_start_url(input_fn=input, attempts: int = 5) -> str:
+    for _ in range(attempts):
+        value = input_fn("Starting URL: ").strip()
+        if value and "://" not in value:
+            value = "https://" + value
+        if _valid_seed_url(value):
+            return value
+        print("  Enter a full HTTP(S) URL, e.g. https://example.com/")
+    raise ValueError("no valid starting URL was provided")
+
+
+def _prompt_runtime(input_fn=input, attempts: int = 5) -> float:
+    for _ in range(attempts):
+        try:
+            return _parse_runtime(input_fn(
+                f"Runtime in minutes ({MIN_RUNTIME_MIN}-{MAX_RUNTIME_MIN}): ").strip())
+        except ValueError as exc:
+            print(f"  {exc}")
+    raise ValueError("no valid runtime was provided")
+
 
 def _read_jsonl(path: str):
     if not os.path.exists(path):
@@ -162,8 +205,9 @@ def main():
     try:
         _main()
     except KeyboardInterrupt:
-        print("\nInterrupted. Saved crawl files are retained. Recover with "
-              "--analyze-only RUN_ID.", file=sys.stderr, flush=True)
+        print("\nInterrupted. Saved crawl files and the unfinished frontier are retained. "
+              "Continue with --resume RUN_ID or analyze with --analyze-only RUN_ID.",
+              file=sys.stderr, flush=True)
         raise SystemExit(130)
 
 
@@ -200,6 +244,19 @@ def _main():
     ap.add_argument("--hunt-max", type=int, default=50, help="Max lead URLs per page from hunt mode")
 
     ap.add_argument("--run-id", default="", help="Optional run id override")
+    ap.add_argument("--expand", action="store_true",
+                    help="Timed recursive expansion: prompts for the starting URL and runtime "
+                         "unless --seed/--seed-file and --runtime are given")
+    ap.add_argument("--runtime", metavar="MINUTES",
+                    help="Stop collecting after this many minutes (1-360) and checkpoint the "
+                         "unfinished frontier; implies unlimited depth unless --depth is given")
+    ap.add_argument("--resume", metavar="RUN_ID",
+                    help="Continue a saved run from its checkpointed frontier")
+    ap.add_argument("--max-frontier", type=int, default=50_000,
+                    help="Maximum queued URLs held at once (default: 50000)")
+    ap.add_argument("--max-per-host", type=int, default=0,
+                    help="Maximum requests per host, 0 = unlimited "
+                         "(default: 0; 500 for timed expansion)")
     ap.add_argument("--analyze-only", metavar="RUN_ID",
                     help="Analyze a saved run offline into a new reanalysis directory")
     ap.add_argument("--retry-model", metavar="RUN_ID", help="Retry failed/missing model responses over saved pages using local Ollama")
@@ -300,11 +357,14 @@ def _main():
                         ("text-cache-bytes", args.text_cache_bytes),
                         ("concurrency", args.concurrency), ("per-host", args.per_host),
                         ("max", args.max), ("hunt-max", args.hunt_max),
+                        ("max-frontier", args.max_frontier),
                         ("leads-per-kind", args.leads_per_kind)):
         if not math.isfinite(value) or value <= 0:
             ap.error(f"--{flag} must be finite and greater than zero")
     if args.depth < 0:
         ap.error("--depth must be nonnegative")
+    if args.max_per_host < 0:
+        ap.error("--max-per-host must be nonnegative")
     if args.retry_model:
         if args.analyze_only or args.no_ollama:
             ap.error("--retry-model requires Ollama and cannot be combined with --analyze-only")
@@ -324,12 +384,42 @@ def _main():
     if args.analyze_only:
         return _analyze_saved_run(args, ap, base_dir)
 
+    runs_root = os.path.join(base_dir, "data", "runs")
+    resumed_seeds: list[str] = []
+    if args.resume:
+        try:
+            args.run_id = _validate_run_id(args.resume)
+        except ValueError as exc:
+            ap.error(str(exc))
+        saved = read_json(os.path.join(runs_root, args.run_id, "crawl_state.json"), default=None)
+        if not saved:
+            ap.error(f"No resumable crawl state found for run {args.run_id!r}")
+        resumed_seeds = [u for u in saved.get("seed_urls", []) if _valid_seed_url(u)]
+
     try:
         seed_urls = _resolve_seed_urls(args.seed, args.seed_file, base_dir)
+        if resumed_seeds and not (args.seed or args.seed_file):
+            seed_urls = resumed_seeds
+        interactive = args.expand or (not seed_urls and sys.stdin.isatty())
+        if not seed_urls and interactive:
+            seed_urls = [_prompt_start_url()]
+        runtime_min = _parse_runtime(args.runtime) if args.runtime is not None else None
+        if runtime_min is None and interactive:
+            runtime_min = _prompt_runtime()
+    except EOFError:
+        ap.error("--expand needs --seed and --runtime when input is not interactive")
     except (OSError, ValueError) as exc:
         ap.error(str(exc))
     if not seed_urls:
         ap.error("No seed URLs found. Provide --seed URL or --seed-file PATH")
+
+    if runtime_min is not None:
+        # Timed expansion runs until the clock or the frontier ends, not a depth limit.
+        if not _flag_given(argv, "--depth") and "depth" not in profile_values:
+            args.depth = UNLIMITED_DEPTH
+        for dest, value in EXPAND_DEFAULTS.items():
+            if not _flag_given(argv, "--" + dest.replace("_", "-")) and dest not in profile_values:
+                setattr(args, dest, value)
     if args.max_response_bytes < 1:
         ap.error("--max-response-bytes must be greater than zero")
     
@@ -344,7 +434,7 @@ def _main():
         run_id = _validate_run_id(args.run_id) if args.run_id.strip() else now_run_id()
     except ValueError as exc:
         ap.error(str(exc))
-    run_dir = os.path.join(base_dir, "data", "runs", run_id)
+    run_dir = os.path.join(runs_root, run_id)
     safe_mkdir(run_dir)
 
     user_agents = load_lines(os.path.join(base_dir, args.ua))
@@ -381,7 +471,10 @@ def _main():
         hunt_terms=hunt_terms,
         hunt_max_leads=args.hunt_max,
         prompt_profile=args.prompt_profile,
-        extraction_timeout_s=args.analysis_page_timeout
+        extraction_timeout_s=args.analysis_page_timeout,
+        runtime_s=runtime_min * 60 if runtime_min is not None else None,
+        max_frontier=args.max_frontier,
+        max_per_host=args.max_per_host,
     )
 
     cross_check_models = [m.strip() for m in args.cross_check.split(",") if m.strip()]
@@ -410,7 +503,13 @@ def _main():
     else:
         print(f"PRIMARY SEED: {seed_urls[0]}")
         print(f"ADDITIONAL SEEDS: {len(seed_urls) - 1}")
-    print(f"DEPTH: {args.depth}  MAX_URLS: {args.max}  SAME_DOMAIN: {args.same_domain}")
+    depth_label = "unlimited" if args.depth >= UNLIMITED_DEPTH else args.depth
+    print(f"DEPTH: {depth_label}  MAX_URLS: {args.max}  SAME_DOMAIN: {args.same_domain}")
+    if runtime_min is not None:
+        print(f"RUNTIME: {runtime_min:g} min  MAX_FRONTIER: {args.max_frontier}"
+              f"  MAX_PER_HOST: {args.max_per_host or 'unlimited'}")
+    if args.resume:
+        print(f"RESUMING: {len(crawler.visited)} URL(s) done, {len(crawler.queued)} queued")
     print(f"CONCURRENCY: {args.concurrency}  PER_HOST: {args.per_host}")
     print(f"MAX RESPONSE: {args.max_response_bytes} bytes (HTML/XHTML only)")
     print(f"OLLAMA: {'OFF' if args.no_ollama else args.model}")
@@ -484,6 +583,13 @@ def _main():
         "prompt_profile": args.prompt_profile,
         "depth": args.depth,
         "max_urls": args.max,
+        "runtime_minutes": runtime_min,
+        "max_frontier": args.max_frontier,
+        "max_per_host": args.max_per_host,
+        "resumed": bool(args.resume),
+        "stop_reason": out["stop_reason"],
+        "frontier_remaining": out["frontier_remaining"],
+        "crawl_stats": {k: v for k, v in out["stats"].items() if k != "rounds"},
         "same_domain_only": args.same_domain,
         "concurrency": args.concurrency,
         "per_host": args.per_host,
@@ -514,6 +620,8 @@ def _main():
     print(f"- Scores:       {out['page_scores_jsonl']}")
     if os.path.exists(out.get("hunt_jsonl","")):
         print(f"- Hunt:         {out['hunt_jsonl']}")
+    print(f"- Discovery:    {out['discovery_edges']}")
+    print(f"- Crawl stats:  {out['crawl_stats']}")
     print(f"- Graph nodes:  {out['graph_nodes']}")
     print(f"- Graph edges:  {out['graph_edges']}")
     print(f"- Report:       {report_path}")
@@ -539,6 +647,10 @@ def _main():
               f"  Findings: {stats.get('finding_count', 0)}"
               f"  Hypotheses: {stats.get('hypothesis_count', 0)}"
               f"  Leads: {stats.get('lead_count', 0)}")
+    if out["frontier_remaining"]:
+        print("")
+        print(f"  Stopped: {out['stop_reason']}. {out['frontier_remaining']} URL(s) remain queued.")
+        print(f"  Continue with: --resume {run_id} --runtime MINUTES")
     print("")
 
 if __name__ == "__main__":

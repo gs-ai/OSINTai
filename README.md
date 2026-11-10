@@ -153,6 +153,36 @@ python run_osintai.py \
   --no-ollama
 ```
 
+### Timed Recursive Expansion
+Start from one URL and keep widening for a fixed time. Each round fetches the URLs the
+previous round discovered, so the source set grows level by level until the runtime
+expires or no eligible URLs remain.
+
+```bash
+# Interactive: prompts for the starting URL and a runtime of 1-360 minutes
+python run_osintai.py --expand --no-ollama
+
+# Non-interactive equivalent
+python run_osintai.py --seed "https://example.com" --runtime 90 --no-ollama --run-id case_001
+
+# Continue the same run from its checkpointed frontier
+python run_osintai.py --resume case_001 --runtime 60 --no-ollama
+```
+
+- `--runtime` removes the depth limit unless `--depth` is given, and applies safety
+  ceilings of `--max 50000` pages and `--max-per-host 500` requests unless you set them.
+  Add `--same-domain` to stay on the starting host.
+- Progress is printed every 5 seconds: elapsed, remaining, rounds, URLs discovered,
+  URLs processed, records collected, and frontier size.
+- At the limit, in-flight pages get a short grace period, then the unfinished frontier
+  is saved to `crawl_state.json`. Ctrl-C checkpoints the same way.
+- URLs are canonicalized before queueing (case, default ports, fragments, tracking and
+  session parameters, query order) and non-HTML file types are never requested.
+  Hosts answering 429/503 are backed off; hosts that fail 5 times in a row are dropped.
+- Per-page model analysis is the throughput limit; use `--no-ollama` for maximum
+  expansion and run `--retry-model RUN_ID` afterwards if model output is wanted.
+- `robots.txt` is not consulted. Confirm authorization and scope before a broad run.
+
 ### Recommended OSINT Crawl
 ```bash
 python run_osintai.py \
@@ -272,6 +302,11 @@ optional arguments:
   --hunt HUNT          Comma-separated hunt terms (optional)
   --hunt-max HUNT_MAX  Max lead URLs per page from hunt mode (default: 50)
   --run-id RUN_ID      Optional run ID override (default: auto-generated)
+  --expand             Timed recursive expansion; prompts for URL and runtime if not given
+  --runtime MINUTES    Stop after 1-360 minutes and checkpoint the unfinished frontier
+  --resume RUN_ID      Continue a saved run from its checkpointed frontier
+  --max-frontier N     Maximum queued URLs held at once (default: 50000)
+  --max-per-host N     Maximum requests per host, 0 = unlimited (default: 0; 500 with --runtime)
 
 analysis options:
   --profile {default,survey}   Named run profile applied before explicit flags
@@ -428,7 +463,12 @@ Each crawl generates a timestamped directory under `data/runs/` with comprehensi
 - **`urls_crawled.jsonl`** - Complete crawl log with HTTP status, timestamps, and metadata
 - **`indicators.jsonl`** - Extracted emails, phones, URLs, domains, IPs, crypto addresses, and social handles
 - **`page_scores.jsonl`** - Intelligence-scored pages with analysis results and risk assessments
-- **`crawl_state.json`** - Resume state with visited URLs, pending queue, and Simhash history
+- **`crawl_state.json`** - Resume state: visited URLs, current and next-round frontier, seeds, Simhash history, statistics
+- **`crawl_stats.json`** - Collection statistics: per-round counts, totals, elapsed time, stop reason, frontier remaining
+- **`discovery_edges.jsonl`** - Parent-child record for every discovered URL: parent, method (seed/link/hunt/redirect), depth, round, UTC timestamp
+- **`fetch_failures.jsonl`** - URLs that could not be retrieved, with error and timestamp
+
+Each `urls_crawled.jsonl` row also carries `depth`, `round`, `parent_url`, `discovered_via`, `fetched_at_utc`, and the full seed-to-page `discovery_path`.
 
 ### AI Analysis Results (when enabled)
 - **`analysis/`** - Individual page intelligence analysis in JSON format
