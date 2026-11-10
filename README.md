@@ -1,6 +1,6 @@
 <img src="bd800949-d4d1-44ce-849e-ba40837590bc.png" alt="OSINTai Logo" width="100%">
 
-# OSINTai v4.2.0 - Advanced Local-First OSINT Web Crawler
+# OSINTai v4.3.0 - Advanced Local-First OSINT Web Crawler
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
@@ -283,7 +283,7 @@ usage: run_osintai.py [-h] [--seed SEED] [--depth DEPTH] [--max MAX]
                       [--no-ollama] [--hunt HUNT] [--hunt-max HUNT_MAX]
                       [--run-id RUN_ID]
 
-OSINTai 4.2.0 (async crawling and analysis)
+OSINTai 4.3.0 (async crawling and analysis)
 
 required arguments:
   --seed SEED           Seed URL (or use seed_urls.txt file)
@@ -823,7 +823,17 @@ pip install black flake8 pytest mypy
 
 ## Changelog
 
-### v4.2.0 (2026-09-10) - Current Release
+### v4.3.0 (2026-11-10) - Current Release
+- Timed recursive expansion: `--expand`, `--runtime` (1-360 minutes), and `--resume`
+- Round-based breadth-first frontier; each round fetches the previous round's discoveries
+- URL canonicalization, bounded prioritized frontier, and host round-robin ordering
+- Per-host request caps, 429/503 backoff, and abandonment of repeatedly failing hosts
+- Graceful shutdown at the runtime limit with a resumable checkpointed frontier
+- Discovery provenance: parent, method, depth, round, UTC timestamp, and seed-to-page path
+- Collection statistics and periodic progress output
+- Offline tests for recursive discovery, deduplication, runtime enforcement, and persistence
+
+### v4.2.0 (2026-09-10)
 - Process deadlines for extraction and expensive analysis stages, with child cleanup
 - Secret-free content-addressed extraction checkpoints and explicit coverage statistics
 - Linear token scans for email, domain, credential, and JWT candidates
@@ -891,4 +901,4 @@ Built for the OSINT community with contributions from security researchers, digi
 
 ---
 
-*OSINTai v4.2.0 - Illuminating the shadows of open source intelligence.*
+*OSINTai v4.3.0 - Illuminating the shadows of open source intelligence.*
