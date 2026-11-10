@@ -1,5 +1,25 @@
 # OSINTai enhancements
 
+## Integrated in 4.3.0
+
+Timed recursive expansion, built on the existing crawler, fetcher, extractor, and storage:
+
+1. **Round-based frontier.** Round N fetches the URLs discovered in round N-1, so the
+   source set widens level by level. A worker pool replaces fixed batches.
+2. **Runtime limit and resumption.** `--runtime` (1-360 minutes) stops collection, gives
+   in-flight pages a grace period, and requeues the rest. `--resume RUN_ID` continues from
+   `crawl_state.json`. `--expand` prompts for the starting URL and runtime.
+3. **Deduplication and prioritization.** URLs are canonicalized before queueing. The
+   frontier is bounded (`--max-frontier`), evicts lowest-priority entries when full, and
+   orders each round round-robin across hosts.
+4. **Source load control.** Per-host concurrency, `--max-per-host`, backoff on 429/503
+   (honoring numeric `Retry-After`), and abandonment after five consecutive failures.
+   Non-HTML file types are not requested. `robots.txt` is not consulted.
+5. **Provenance and statistics.** `discovery_edges.jsonl`, `crawl_stats.json`,
+   `fetch_failures.jsonl`, and per-page depth, round, parent, and discovery path.
+
+Benchmarks in `BENCHMARKS.md` were measured on 4.2.0 and were not rerun for 4.3.0.
+
 ## Integrated in 4.2.0
 
 All seven enhancement areas from the 4.1.0 follow-up list are implemented:
