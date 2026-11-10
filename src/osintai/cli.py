@@ -211,121 +211,165 @@ def main():
         raise SystemExit(130)
 
 
-def _main():
+class _HelpFormatter(argparse.RawDescriptionHelpFormatter):
+    """Aligned two-column help that wraps to the terminal, capped for readability."""
+
+    def __init__(self, prog):
+        import shutil
+        width = min(shutil.get_terminal_size((100, 24)).columns, 100) - 2
+        super().__init__(prog, max_help_position=34, width=width)
+
+    def _format_action_invocation(self, action):
+        # "--seed URL" instead of the default "--seed SEED".
+        if not action.option_strings or action.nargs == 0:
+            return super()._format_action_invocation(action)
+        metavar = self._format_args(action, self._get_default_metavar_for_optional(action))
+        return ", ".join(action.option_strings) + " " + metavar
+
+
+_HELP_EPILOG = """\
+examples:
+  Crawl one site and analyze it
+    %(prog)s --seed https://example.com --same-domain
+
+  Timed recursive expansion for 30 minutes
+    %(prog)s --expand --seed https://example.com --runtime 30
+
+  Continue an interrupted run, or re-analyze one offline
+    %(prog)s --resume RUN_ID
+    %(prog)s --analyze-only RUN_ID
+
+  Crawl and report only, no local LLM
+    %(prog)s --seed-file seeds.txt --no-ollama --no-analysis
+
+Runs are saved under data/runs/RUN_ID/.
+"""
+
+
+def _build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
-        description=f"OSINTai {__version__} (async crawling and analysis)"
-    )
-    ap.add_argument("--version", action="version", version=f"OSINTai {__version__}")
-    ap.add_argument(
-        "--seed", action="append", help="Seed HTTP(S) URL; may be supplied multiple times"
-    )
-    ap.add_argument("--seed-file", help="Text file containing one HTTP(S) seed URL per line")
-    ap.add_argument("--depth", type=int, default=2, help="Max depth")
-    ap.add_argument("--max", type=int, default=150, help="Max URLs")
-    ap.add_argument("--same-domain", action="store_true", help="Only crawl same domain as seed")
-
-    ap.add_argument("--concurrency", type=int, default=18, help="Global concurrency")
-    ap.add_argument("--per-host", type=int, default=4, help="Per-host concurrency")
-    ap.add_argument(
-        "--max-response-bytes",
-        type=int,
-        default=2_000_000,
-        help="Maximum decoded HTML response size (default: 2000000)",
+        prog=os.path.basename(sys.argv[0]) or "osintai",
+        usage="%(prog)s [--seed URL | --seed-file PATH | --resume RUN_ID] [options]",
+        description=f"OSINTai {__version__} - async OSINT crawling and local-LLM analysis",
+        epilog=_HELP_EPILOG,
+        formatter_class=_HelpFormatter,
+        add_help=False,
     )
 
-    ap.add_argument("--ua", default="user_agents.txt", help="User agents file")
-    ap.add_argument("--proxies", default="", help="Optional proxy list file")
+    general = ap.add_argument_group("general")
+    general.add_argument("-h", "--help", action="help", help="Show this help and exit")
+    general.add_argument("--version", action="version", version=f"OSINTai {__version__}",
+                         help="Show version and exit")
 
-    ap.add_argument("--model", default="osint-tuned-v3:latest", help="Ollama analyze model")
-    ap.add_argument("--embed-model", default="bge-m3:latest", help="Ollama embeddings model")
-    ap.add_argument("--no-ollama", action="store_true", help="Disable LLM analysis and embeddings")
+    target = ap.add_argument_group("target")
+    target.add_argument("--seed", action="append", metavar="URL",
+                        help="Seed HTTP(S) URL (repeatable)")
+    target.add_argument("--seed-file", metavar="PATH",
+                        help="File with one HTTP(S) seed URL per line")
+    target.add_argument("--profile", default="default", choices=sorted(RUN_PROFILES),
+                        metavar="NAME",
+                        help=f"Run preset: {' | '.join(sorted(RUN_PROFILES))} (default: default)")
+    target.add_argument("--run-id", default="", metavar="ID",
+                        help="Override the generated run ID")
 
-    ap.add_argument("--hunt", default="", help="Comma-separated hunt terms")
-    ap.add_argument("--hunt-max", type=int, default=50, help="Max lead URLs per page from hunt mode")
+    modes = ap.add_argument_group("run modes")
+    modes.add_argument("--expand", action="store_true",
+                       help="Timed recursive expansion; prompts for URL and runtime "
+                            "unless --seed and --runtime are given")
+    modes.add_argument("--runtime", metavar="MINUTES",
+                       help=f"Stop after {MIN_RUNTIME_MIN}-{MAX_RUNTIME_MIN} minutes and "
+                            "checkpoint the frontier; implies unlimited depth "
+                            "unless --depth is set")
+    modes.add_argument("--resume", metavar="RUN_ID",
+                       help="Continue a saved run from its checkpoint")
+    modes.add_argument("--analyze-only", metavar="RUN_ID",
+                       help="Re-analyze a saved run offline (no crawling, no LLM)")
+    modes.add_argument("--retry-model", metavar="RUN_ID",
+                       help="Retry failed/missing model responses for a saved run")
 
-    ap.add_argument("--run-id", default="", help="Optional run id override")
-    ap.add_argument("--expand", action="store_true",
-                    help="Timed recursive expansion: prompts for the starting URL and runtime "
-                         "unless --seed/--seed-file and --runtime are given")
-    ap.add_argument("--runtime", metavar="MINUTES",
-                    help="Stop collecting after this many minutes (1-360) and checkpoint the "
-                         "unfinished frontier; implies unlimited depth unless --depth is given")
-    ap.add_argument("--resume", metavar="RUN_ID",
-                    help="Continue a saved run from its checkpointed frontier")
-    ap.add_argument("--max-frontier", type=int, default=50_000,
-                    help="Maximum queued URLs held at once (default: 50000)")
-    ap.add_argument("--max-per-host", type=int, default=0,
-                    help="Maximum requests per host, 0 = unlimited "
-                         "(default: 0; 500 for timed expansion)")
-    ap.add_argument("--analyze-only", metavar="RUN_ID",
-                    help="Analyze a saved run offline into a new reanalysis directory")
-    ap.add_argument("--retry-model", metavar="RUN_ID", help="Retry failed/missing model responses over saved pages using local Ollama")
-    ap.add_argument("--retry-limit", type=int, default=20, help="Maximum saved pages retried (default: 20)")
-    ap.add_argument("--retry-timeout", type=float, default=60.0, help="Total deadline per model retry in seconds")
-    ap.add_argument("--analysis-page-timeout", type=float, default=30.0, help="Disposable extraction worker deadline in seconds")
-    ap.add_argument("--analysis-stage-timeout", type=float, default=120.0, help="Disposable analysis stage deadline in seconds")
-    ap.add_argument("--correlation-pair-budget", type=int, default=100_000, help="Maximum co-occurrence candidate pairs examined")
-    ap.add_argument("--text-cache-bytes", type=int, default=16_000_000, help="Maximum page-text LRU cache bytes per process")
-    ap.add_argument("--analysis-max-chars", type=int, default=200_000,
-                    help="Maximum characters analyzed per saved page (default: 200000)")
+    scope = ap.add_argument_group("crawl scope")
+    scope.add_argument("--depth", type=int, default=2, metavar="N",
+                       help="Maximum link depth (default: 2)")
+    scope.add_argument("--max", type=int, default=150, metavar="N",
+                       help="Maximum URLs to crawl (default: 150)")
+    scope.add_argument("--same-domain", action="store_true",
+                       help="Stay on the seed's domain")
+    scope.add_argument("--max-frontier", type=int, default=50_000, metavar="N",
+                       help="Maximum queued URLs held at once (default: 50,000)")
+    scope.add_argument("--max-per-host", type=int, default=0, metavar="N",
+                       help="Maximum requests per host, 0 = unlimited "
+                            "(default: 0; 500 with --runtime)")
 
-    ap.add_argument(
-        "--profile",
-        default="default",
-        choices=sorted(RUN_PROFILES),
-        help="Named run profile applied before explicit flags (default: default)",
-    )
-    ap.add_argument(
-        "--prompt-profile",
-        default=STANDARD,
-        choices=sorted(PAGE_PROFILES),
-        help="Page analysis lens (default: standard)",
-    )
+    network = ap.add_argument_group("network")
+    network.add_argument("--concurrency", type=int, default=18, metavar="N",
+                         help="Global concurrent requests (default: 18)")
+    network.add_argument("--per-host", type=int, default=4, metavar="N",
+                         help="Concurrent requests per host (default: 4)")
+    network.add_argument("--max-response-bytes", type=int, default=2_000_000, metavar="BYTES",
+                         help="Maximum decoded HTML response size (default: 2,000,000)")
+    network.add_argument("--ua", default="user_agents.txt", metavar="PATH",
+                         help="User-agent list file (default: user_agents.txt)")
+    network.add_argument("--proxies", default="", metavar="PATH",
+                         help="Proxy list file (optional)")
 
-    ap.add_argument(
-        "--no-analysis",
-        action="store_true",
-        help="Skip the post-crawl analysis stage (crawl and report only)",
-    )
-    ap.add_argument(
-        "--deep",
-        action="store_true",
-        help="Optional: run a model-assisted run-level analysis pass",
-    )
-    ap.add_argument(
-        "--cross-check",
-        default="",
-        help="Optional: comma-separated additional Ollama models to cross-check claims against",
-    )
-    ap.add_argument(
-        "--evaluate",
-        action="store_true",
-        help="Optional: score analysis quality against the investigative rubric (deterministic)",
-    )
-    ap.add_argument(
-        "--training-export",
-        action="store_true",
-        help="Optional: export local training/evaluation datasets (requires --evaluate)",
-    )
-    ap.add_argument(
-        "--gap-days",
-        type=int,
-        default=90,
-        help="Temporal gap threshold in days (default: 90)",
-    )
-    ap.add_argument(
-        "--leads-per-kind",
-        type=int,
-        default=10,
-        help="Max entities of each kind expanded into pivot leads (default: 10)",
-    )
-    ap.add_argument(
-        "--experimental-recursive",
-        type=int,
-        default=0,
-        metavar="N",
-        help="EXPERIMENTAL: extra bounded deep-analysis refinement passes, 0-3 (default: 0)",
-    )
+    hunt = ap.add_argument_group("hunt mode")
+    hunt.add_argument("--hunt", default="", metavar="TERMS",
+                      help="Comma-separated terms to prioritize links by")
+    hunt.add_argument("--hunt-max", type=int, default=50, metavar="N",
+                      help="Maximum lead URLs per page (default: 50)")
+
+    models = ap.add_argument_group("models (ollama)")
+    models.add_argument("--model", default="osint-tuned-v3:latest", metavar="NAME",
+                        help="Analysis model (default: osint-tuned-v3:latest)")
+    models.add_argument("--embed-model", default="bge-m3:latest", metavar="NAME",
+                        help="Embeddings model (default: bge-m3:latest)")
+    models.add_argument("--no-ollama", action="store_true",
+                        help="Disable LLM analysis and embeddings")
+    models.add_argument("--prompt-profile", default=STANDARD, choices=sorted(PAGE_PROFILES),
+                        metavar="LENS",
+                        help=f"Page analysis lens: {' | '.join(sorted(PAGE_PROFILES))} "
+                             f"(default: {STANDARD})")
+
+    analysis = ap.add_argument_group("analysis")
+    analysis.add_argument("--no-analysis", action="store_true",
+                          help="Skip post-crawl analysis (crawl and report only)")
+    analysis.add_argument("--deep", action="store_true",
+                          help="Add a model-assisted run-level analysis pass")
+    analysis.add_argument("--cross-check", default="", metavar="MODELS",
+                          help="Comma-separated extra models to cross-check claims")
+    analysis.add_argument("--evaluate", action="store_true",
+                          help="Score analysis against the investigative rubric")
+    analysis.add_argument("--training-export", action="store_true",
+                          help="Export training/evaluation datasets (needs --evaluate)")
+    analysis.add_argument("--gap-days", type=int, default=90, metavar="DAYS",
+                          help="Temporal gap threshold (default: 90)")
+    analysis.add_argument("--leads-per-kind", type=int, default=10, metavar="N",
+                          help="Entities per kind expanded into pivot leads (default: 10)")
+    analysis.add_argument("--experimental-recursive", type=int, default=0, metavar="N",
+                          help="EXPERIMENTAL: extra deep-analysis passes, 0-3 (default: 0)")
+
+    retry = ap.add_argument_group("model retry (with --retry-model)")
+    retry.add_argument("--retry-limit", type=int, default=20, metavar="N",
+                       help="Maximum saved pages retried (default: 20)")
+    retry.add_argument("--retry-timeout", type=float, default=60.0, metavar="SECS",
+                       help="Deadline per model retry (default: 60)")
+
+    tuning = ap.add_argument_group("advanced tuning")
+    tuning.add_argument("--analysis-max-chars", type=int, default=200_000, metavar="N",
+                        help="Characters analyzed per page (default: 200,000)")
+    tuning.add_argument("--analysis-page-timeout", type=float, default=30.0, metavar="SECS",
+                        help="Extraction worker deadline per page (default: 30)")
+    tuning.add_argument("--analysis-stage-timeout", type=float, default=120.0, metavar="SECS",
+                        help="Analysis stage deadline (default: 120)")
+    tuning.add_argument("--correlation-pair-budget", type=int, default=100_000, metavar="N",
+                        help="Co-occurrence candidate pairs examined (default: 100,000)")
+    tuning.add_argument("--text-cache-bytes", type=int, default=16_000_000, metavar="BYTES",
+                        help="Page-text LRU cache per process (default: 16,000,000)")
+    return ap
+
+
+def _main():
+    ap = _build_parser()
 
     argv = list(sys.argv[1:])
     args = ap.parse_args()
