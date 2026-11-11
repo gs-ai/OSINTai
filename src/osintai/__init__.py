@@ -11,6 +11,7 @@ __all__ = [
   "scoring",
   "report",
   "proxy_pool",
+  "proxyharvest",
   "dedupe",
   "hunt",
   "graph_export",

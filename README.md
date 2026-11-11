@@ -106,7 +106,7 @@ Pages are automatically ranked by total score, with AI-enhanced intelligence rec
 ### Prerequisites
 - **Python 3.10+**
 - **Conda** (recommended for environment management)
-- **Ollama** (optional, for AI-powered features)
+- **Ollama** (optional; only used when `--ollama` is passed)
 
 ### Quick Setup
 
@@ -119,7 +119,7 @@ cd OSINTai
 conda create -n osintai python=3.10 beautifulsoup4 httpx anyio lxml -y
 conda activate osintai
 
-# 3. Install Ollama (for AI features)
+# 3. Optional: install Ollama for local model analysis (used only with --ollama)
 brew install ollama
 ollama pull osint-tuned-v3:latest
 ollama pull bge-m3:latest
@@ -143,14 +143,13 @@ cd ~/Desktop/Projects/OSINTai
 conda activate osintai
 ```
 
-### Fast Basic Crawl, No AI
+### Basic Crawl
 ```bash
 python run_osintai.py \
   --seed "https://example.com" \
   --depth 2 \
   --max 150 \
-  --same-domain \
-  --no-ollama
+  --same-domain
 ```
 
 ### Timed Recursive Expansion
@@ -160,13 +159,13 @@ expires or no eligible URLs remain.
 
 ```bash
 # Interactive: prompts for the starting URL and a runtime of 1-360 minutes
-python run_osintai.py --expand --no-ollama
+python run_osintai.py --expand
 
 # Non-interactive equivalent
-python run_osintai.py --seed "https://example.com" --runtime 90 --no-ollama --run-id case_001
+python run_osintai.py --seed "https://example.com" --runtime 90 --run-id case_001
 
 # Continue the same run from its checkpointed frontier
-python run_osintai.py --resume case_001 --runtime 60 --no-ollama
+python run_osintai.py --resume case_001 --runtime 60
 ```
 
 - `--runtime` removes the depth limit unless `--depth` is given, and applies safety
@@ -179,8 +178,9 @@ python run_osintai.py --resume case_001 --runtime 60 --no-ollama
 - URLs are canonicalized before queueing (case, default ports, fragments, tracking and
   session parameters, query order) and non-HTML file types are never requested.
   Hosts answering 429/503 are backed off; hosts that fail 5 times in a row are dropped.
-- Per-page model analysis is the throughput limit; use `--no-ollama` for maximum
-  expansion and run `--retry-model RUN_ID` afterwards if model output is wanted.
+- Ollama is off by default, so expansion runs at full speed. With `--ollama`, per-page
+  model analysis becomes the throughput limit; `--retry-model RUN_ID` can add model
+  output to a saved run afterwards.
 - `robots.txt` is not consulted. Confirm authorization and scope before a broad run.
 
 ### Recommended OSINT Crawl
@@ -192,7 +192,7 @@ python run_osintai.py \
   --same-domain
 ```
 
-Default Ollama models:
+Ollama is never contacted unless `--ollama` (or `--retry-model`) is given. Default models:
 ```text
 Analysis:   osint-tuned-v3:latest
 Embeddings: bge-m3:latest
@@ -276,51 +276,74 @@ with `--max-response-bytes` if a specific authorized page requires it.
 ## Command Line Options
 
 ```
-usage: run_osintai.py [-h] [--seed SEED] [--depth DEPTH] [--max MAX]
-                      [--same-domain] [--concurrency CONCURRENCY]
-                      [--per-host PER_HOST] [--ua UA] [--proxies PROXIES]
-                      [--model MODEL] [--embed-model EMBED_MODEL]
-                      [--no-ollama] [--hunt HUNT] [--hunt-max HUNT_MAX]
-                      [--run-id RUN_ID]
+usage: run_osintai.py [--seed URL | --seed-file PATH | --resume RUN_ID] [options]
 
-OSINTai 4.3.0 (async crawling and analysis)
+OSINTai 4.3.0 - async OSINT crawling and local-LLM analysis
 
-required arguments:
-  --seed SEED           Seed URL (or use seed_urls.txt file)
+general:
+  -h, --help                     Show this help and exit
+  --version                      Show version and exit
 
-optional arguments:
-  --depth DEPTH         Max crawl depth (default: 2)
-  --max MAX            Max URLs to crawl (default: 150)
-  --same-domain        Only crawl same domain as seed
-  --concurrency CONCURRENCY  Global concurrency limit (default: 18)
-  --per-host PER_HOST   Per-host concurrency limit (default: 4)
-  --ua UA              User agents file (default: user_agents.txt)
-  --proxies PROXIES    Optional proxy list file
-  --model MODEL        Ollama analysis model (default: osint-tuned-v3:latest)
-  --embed-model EMBED_MODEL  Ollama embeddings model (default: bge-m3:latest)
-  --no-ollama          Disable LLM analysis and embeddings
-  --hunt HUNT          Comma-separated hunt terms (optional)
-  --hunt-max HUNT_MAX  Max lead URLs per page from hunt mode (default: 50)
-  --run-id RUN_ID      Optional run ID override (default: auto-generated)
-  --expand             Timed recursive expansion; prompts for URL and runtime if not given
-  --runtime MINUTES    Stop after 1-360 minutes and checkpoint the unfinished frontier
-  --resume RUN_ID      Continue a saved run from its checkpointed frontier
-  --max-frontier N     Maximum queued URLs held at once (default: 50000)
-  --max-per-host N     Maximum requests per host, 0 = unlimited (default: 0; 500 with --runtime)
+target:
+  --seed URL                     Seed HTTP(S) URL (repeatable)
+  --seed-file PATH               File with one HTTP(S) seed URL per line
+  --profile NAME                 Run preset: default | survey (default: default)
+  --run-id ID                    Override the generated run ID
 
-analysis options:
-  --profile {default,survey}   Named run profile applied before explicit flags
-  --prompt-profile {standard,threat}  Page analysis lens (default: standard)
-  --no-analysis        Skip the post-crawl analysis stage (crawl and report only)
-  --gap-days GAP_DAYS  Temporal gap threshold in days (default: 90)
-  --leads-per-kind N   Max entities of each kind expanded into leads (default: 10)
+run modes:
+  --expand                       Timed recursive expansion; prompts for URL and runtime unless
+                                 --seed and --runtime are given
+  --runtime MINUTES              Stop after 1-360 minutes and checkpoint the frontier; implies
+                                 unlimited depth unless --depth is set
+  --resume RUN_ID                Continue a saved run from its checkpoint
+  --analyze-only RUN_ID          Re-analyze a saved run offline (no crawling, no LLM)
+  --retry-model RUN_ID           Retry failed/missing Ollama responses for a saved run
 
-optional deeper analysis (off by default):
-  --deep               Model-assisted run-level analysis pass
-  --cross-check MODELS Comma-separated extra Ollama models to cross-check claims
-  --evaluate           Score analysis quality against the investigative rubric
-  --training-export    Export local training/evaluation datasets (needs --evaluate)
-  --experimental-recursive N  Extra bounded refinement passes, 0-3 (default: 0)
+crawl scope:
+  --depth N                      Maximum link depth (default: 2)
+  --max N                        Maximum URLs to crawl (default: 150)
+  --same-domain                  Stay on the seed's domain
+  --max-frontier N               Maximum queued URLs held at once (default: 50,000)
+  --max-per-host N               Maximum requests per host, 0 = unlimited (default: 0; 500 with
+                                 --runtime)
+
+network:
+  --concurrency N                Global concurrent requests (default: 18)
+  --per-host N                   Concurrent requests per host (default: 4)
+  --max-response-bytes BYTES     Maximum decoded HTML response size (default: 2,000,000)
+  --ua PATH                      User-agent list file (default: user_agents.txt)
+  --proxies PATH                 Proxy list file (optional)
+
+hunt mode:
+  --hunt TERMS                   Comma-separated terms to prioritize links by
+  --hunt-max N                   Maximum lead URLs per page (default: 50)
+
+local llm (optional, off unless --ollama is given):
+  --model NAME                   Analysis model (default: osint-tuned-v3:latest)
+  --embed-model NAME             Embeddings model (default: bge-m3:latest)
+  --ollama                       Enable local Ollama analysis and embeddings
+  --prompt-profile LENS          Page analysis lens: standard | threat (default: standard)
+
+analysis:
+  --no-analysis                  Skip post-crawl analysis (crawl and report only)
+  --deep                         Add a model-assisted run-level pass (needs --ollama)
+  --cross-check MODELS           Extra models to cross-check claims (needs --ollama)
+  --evaluate                     Score analysis against the investigative rubric
+  --training-export              Export training/evaluation datasets (needs --evaluate)
+  --gap-days DAYS                Temporal gap threshold (default: 90)
+  --leads-per-kind N             Entities per kind expanded into pivot leads (default: 10)
+  --experimental-recursive N     EXPERIMENTAL: extra --deep passes, 0-3 (default: 0)
+
+model retry (with --retry-model):
+  --retry-limit N                Maximum saved pages retried (default: 20)
+  --retry-timeout SECS           Deadline per model retry (default: 60)
+
+advanced tuning:
+  --analysis-max-chars N         Characters analyzed per page (default: 200,000)
+  --analysis-page-timeout SECS   Extraction worker deadline per page (default: 30)
+  --analysis-stage-timeout SECS  Analysis stage deadline (default: 120)
+  --correlation-pair-budget N    Co-occurrence candidate pairs examined (default: 100,000)
+  --text-cache-bytes BYTES       Page-text LRU cache per process (default: 16,000,000)
 ```
 
 ### Analysis Layer
@@ -425,16 +448,16 @@ Confidence is reported by kind (`source_support`, `deterministic`, `model_self`,
 `cross_model`, `human_review`) and the kinds are never merged. A model's self-reported
 confidence is recorded, labelled, and never treated as factual reliability.
 
-**Optional deeper modes.** Nothing below runs unless requested, and the default path stays
-one model call per page:
+**Optional deeper modes.** Nothing below runs unless requested. The model-assisted modes
+also require `--ollama`; without it no model is contacted:
 
 ```bash
 # Run-level model analysis across the whole crawl
-python run_osintai.py --seed "https://target.example/" --deep
+python run_osintai.py --seed "https://target.example/" --ollama --deep
 
 # Cross-check the model's risk assessments against a second model.
 # Where models disagree, the disagreement is preserved, not averaged away.
-python run_osintai.py --seed "https://target.example/" --cross-check "mistral:7b-instruct-v0.3-q5_K_M"
+python run_osintai.py --seed "https://target.example/" --ollama --cross-check "mistral:7b-instruct-v0.3-q5_K_M"
 
 # Score analysis quality and export portable local training/evaluation datasets
 python run_osintai.py --seed "https://target.example/" --evaluate --training-export
@@ -535,6 +558,13 @@ data/runs/2026-01-16_143022_investigation_001/
 **Purpose**: IP rotation and anonymity
 **Format**: One proxy URL per line (`http://ip:port` or `ip:port`)
 **Location**: Any accessible file path
+**Generate one**: `run_proxy_harvester.py` writes this format to
+`data/proxies/working_set_latest.txt` (see [Proxy Harvester](#proxy-harvester))
+
+### Proxy Harvester Config (Optional)
+**Purpose**: Source list and thresholds for `run_proxy_harvester.py`
+**Format**: JSON (`config.example.json`), or YAML with PyYAML installed
+**Location**: Passed via `--config`
 
 ### Seed URLs (`seed_urls.txt`) - Optional
 **Purpose**: Batch processing of multiple starting points
@@ -549,6 +579,60 @@ https://target3.com/analysis
 
 ---
 
+## Proxy Harvester
+
+A separate entry point, `run_proxy_harvester.py`, continuously discovers and
+validates public free proxies and exports a working set the crawler can consume
+via `--proxies`.
+
+```bash
+# Inspect what the sources yield without sending a single probe
+python run_proxy_harvester.py --dry-run
+
+# One full cycle: harvest, validate, classify, export
+python run_proxy_harvester.py --once --export-dir data/proxies
+
+# Continuous operation on a randomized 19-23 minute cycle
+python run_proxy_harvester.py --export-dir data/proxies
+
+# Feed the result straight into a crawl
+python run_osintai.py --seed https://example.com \
+    --proxies data/proxies/working_set_latest.txt
+```
+
+**What it does**
+
+- Fetches public raw text/JSON proxy lists, dispatching to a Playwright renderer
+  only for sources that genuinely render client-side (`--enable-js`)
+- Validates concurrently against JSON echo endpoints with a two-phase
+  confirmation probe, so proxies that answer once and die do not enter the set
+- Rejects any response whose body does not match the echo schema, catching
+  captive portals and content injection
+- Grades anonymity as `transparent` / `anonymous` / `elite` against a measured
+  baseline of your own egress address
+- Persists the working set in SQLite with churn tracking and automatic retirement
+- Exports CSV / JSON / JSONL / TXT plus a manifest at configurable checkpoints
+
+**What it does not do**
+
+It does not produce a verified residential proxy pool. Consented residential
+bandwidth is a metered commercial product behind an account; free public lists
+carry unverified "residential" labels that are frequently wrong and stale within
+hours, and unconsented residential exits are commonly compromised devices. This
+module therefore labels network type as **evidence-graded indication** —
+`residential_indicated`, `mobile_indicated`, `datacenter`, `hosting`, `unknown` —
+with a `classification_basis` naming every signal that fired and a confidence
+score that never reaches certainty.
+
+Treat the output as disposable test infrastructure. Never route authenticated
+sessions, client identifiers, or case-linked queries through a harvested proxy.
+
+**Full documentation:** [`docs/PROXY_HARVESTER.md`](docs/PROXY_HARVESTER.md) —
+cycle mechanics, the `L(s)` language heuristic, classification precedence, ASN
+table format, feedback-loop risk, CLI reference, and runbook.
+
+---
+
 ## Advanced Usage Patterns
 
 ### Intelligence Pipeline Workflow
@@ -557,13 +641,13 @@ https://target3.com/analysis
 python run_osintai.py \
   --seed "https://target.com" \
   --max 500 \
-  --no-ollama \
   --concurrency 32
 
-# Phase 2: Deep AI Analysis (Quality over Speed)
+# Phase 2: Optional local model analysis (Quality over Speed)
 python run_osintai.py \
   --seed "https://target.com" \
   --max 100 \
+  --ollama \
   --model "osint-tuned-v3:latest" \
   --concurrency 8
 
@@ -591,6 +675,7 @@ python run_osintai.py \
 # Using different Ollama models
 python run_osintai.py \
   --seed "https://target.com" \
+  --ollama \
   --model "llama2:13b" \
   --embed-model "all-minilm:33m"
 ```
@@ -670,8 +755,8 @@ ollama list
 # Test model availability
 ollama run osint-tuned-v3:latest "test"
 
-# Fallback to non-AI mode
-python run_osintai.py --seed "https://example.com" --no-ollama
+# Run without the model (default)
+python run_osintai.py --seed "https://example.com"
 ```
 
 **Proxy Configuration Issues**
