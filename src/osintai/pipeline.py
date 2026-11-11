@@ -76,7 +76,7 @@ class AnalysisOptions:
     gap_days: int = 90
     prompt_profile: str = STANDARD
     model: str = ""
-    use_ollama: bool = True
+    use_ollama: bool = False
     experimental_recursive: int = 0
     max_leads_per_kind: int = 10
     max_text_chars: int = 200_000

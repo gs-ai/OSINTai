@@ -1,0 +1,17 @@
+# Optional extras for the proxy harvester.
+#
+# The harvester runs on the project's pinned requirements.txt alone (httpx,
+# beautifulsoup4, lxml). Everything below unlocks an optional code path and is
+# deliberately kept out of requirements.txt so the release gate keeps auditing a
+# small, locked runtime surface.
+
+# SOCKS4/SOCKS5 proxy validation (--list includes socks sources).
+# Without this, socks candidates are reported as "skipped", not failed.
+httpx[socks]==0.28.1
+
+# JS-rendered source pages (--enable-js). After installing, run:
+#   python -m playwright install chromium
+playwright==1.56.0
+
+# YAML configuration files (config.example.yaml). JSON configs need nothing.
+PyYAML==6.0.3

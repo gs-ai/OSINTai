@@ -1,0 +1,65 @@
+# OSINTai proxy harvester configuration (YAML form).
+# Requires PyYAML: pip install -r requirements-proxyharvest.txt
+# The JSON form (config.example.json) works against the project's pinned
+# requirements with no extra dependency and is the recommended default.
+#
+# Precedence: built-in defaults < this file < explicit command-line flags.
+
+sources:
+  - id: speedx-http
+    url: https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt
+    kind: text            # text | json | html | auto
+    renderer: python      # python | js | auto
+    protocol: http        # default protocol when the record does not state one
+    enabled: true
+    notes: Raw ip:port list. Static text needs no browser.
+
+  - id: speedx-socks5
+    url: https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/socks5.txt
+    kind: text
+    renderer: python
+    protocol: socks5
+    enabled: true
+    notes: "SOCKS5 validation additionally requires: pip install httpx[socks]"
+
+  - id: monosans-json
+    url: https://raw.githubusercontent.com/monosans/proxy-list/main/proxies.json
+    kind: json
+    renderer: python
+    protocol: http
+    enabled: true
+    notes: Structured feed; protocol comes from the record, not the default.
+
+  # Disabled template for a JS-rendered table. 'auto' fetches statically first
+  # and escalates to Playwright only when the static body is an empty SPA shell.
+  # Confirm the site's terms of use before enabling anything here.
+  - id: example-js-table
+    url: https://example.invalid/proxy-table
+    kind: html
+    renderer: auto
+    protocol: http
+    enabled: false
+    respect_robots: true
+
+cycle:
+  max_candidates_per_cycle: 4000
+  # CSV/TSV of "cidr,asn,org,country". Without it, classification falls back to
+  # PTR evidence only and confidence stays correspondingly low.
+  asn_table: ""
+
+validation:
+  echo_urls:
+    - https://httpbin.org/get
+    - https://postman-echo.com/get
+  connect_timeout_s: 5.0
+  confirm_delay_s: 2.0
+  max_body_bytes: 64000
+  verify_tls: true
+
+stealth:
+  user_agents_file: user_agents.txt
+  # Routing harvest traffic through harvested proxies. Off by default; read the
+  # "Feedback loop risk" section of docs/PROXY_HARVESTER.md before enabling.
+  allow_chaining: false
+  chain_min_anonymity: elite
+  chain_max_age_s: 900

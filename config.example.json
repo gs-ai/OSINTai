@@ -1,0 +1,70 @@
+{
+  "_comment": [
+    "OSINTai proxy harvester configuration. Copy to config.json and edit.",
+    "Precedence: built-in defaults < this file < explicit command-line flags.",
+    "A YAML equivalent (config.example.yaml) is read instead when PyYAML is installed."
+  ],
+
+  "sources": [
+    {
+      "id": "speedx-http",
+      "url": "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt",
+      "kind": "text",
+      "renderer": "python",
+      "protocol": "http",
+      "enabled": true,
+      "notes": "Raw ip:port list. Static text needs no browser."
+    },
+    {
+      "id": "speedx-socks5",
+      "url": "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/socks5.txt",
+      "kind": "text",
+      "renderer": "python",
+      "protocol": "socks5",
+      "enabled": true,
+      "notes": "SOCKS5 validation additionally requires: pip install httpx[socks]"
+    },
+    {
+      "id": "monosans-json",
+      "url": "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies.json",
+      "kind": "json",
+      "renderer": "python",
+      "protocol": "http",
+      "enabled": true,
+      "notes": "Structured feed; protocol comes from the record, not the default."
+    },
+    {
+      "id": "example-js-table",
+      "url": "https://example.invalid/proxy-table",
+      "kind": "html",
+      "renderer": "auto",
+      "protocol": "http",
+      "enabled": false,
+      "respect_robots": true,
+      "notes": "Disabled template. renderer 'auto' tries static first and escalates to Playwright only if the static body is an empty SPA shell. Confirm the site's terms before enabling."
+    }
+  ],
+
+  "cycle": {
+    "max_candidates_per_cycle": 4000,
+    "asn_table": ""
+  },
+
+  "validation": {
+    "echo_urls": [
+      "https://httpbin.org/get",
+      "https://postman-echo.com/get"
+    ],
+    "connect_timeout_s": 5.0,
+    "confirm_delay_s": 2.0,
+    "max_body_bytes": 64000,
+    "verify_tls": true
+  },
+
+  "stealth": {
+    "user_agents_file": "user_agents.txt",
+    "allow_chaining": false,
+    "chain_min_anonymity": "elite",
+    "chain_max_age_s": 900
+  }
+}

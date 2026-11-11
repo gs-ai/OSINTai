@@ -46,18 +46,20 @@ jobs:
         run: python -W error::ResourceWarning -m unittest discover -s tests -v
 
       - name: Compile Python sources
-        run: python -m compileall -q src tests run_osintai.py
+        run: python -m compileall -q src tests run_osintai.py run_proxy_harvester.py
 
       - name: Run security analysis
-        run: bandit -q -r src run_osintai.py -ll -ii
+        run: bandit -q -r src run_osintai.py run_proxy_harvester.py -ll -ii
 
       - name: Check correctness lint rules
-        run: ruff check --select E9,F63,F7,F82 src tests run_osintai.py
+        run: ruff check --select E9,F63,F7,F82 src tests run_osintai.py run_proxy_harvester.py
 
       - name: Verify release identity
         run: |
           python -c "import sys; sys.path.insert(0, 'src'); from osintai import __version__; assert f'# OSINTai v{__version__} ' in open('README.md', encoding='utf-8').read()"
           python run_osintai.py --help
+          python run_proxy_harvester.py --help
+          python run_proxy_harvester.py --list-sources | python -c "import json,sys; assert json.load(sys.stdin)"
 
   release-gate:
     name: release-gate

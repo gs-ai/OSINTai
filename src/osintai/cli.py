@@ -239,8 +239,8 @@ examples:
     %(prog)s --resume RUN_ID
     %(prog)s --analyze-only RUN_ID
 
-  Crawl and report only, no local LLM
-    %(prog)s --seed-file seeds.txt --no-ollama --no-analysis
+  Crawl and analyze with the optional local Ollama model
+    %(prog)s --seed https://example.com --ollama --deep
 
 Runs are saved under data/runs/RUN_ID/.
 """
@@ -285,7 +285,7 @@ def _build_parser() -> argparse.ArgumentParser:
     modes.add_argument("--analyze-only", metavar="RUN_ID",
                        help="Re-analyze a saved run offline (no crawling, no LLM)")
     modes.add_argument("--retry-model", metavar="RUN_ID",
-                       help="Retry failed/missing model responses for a saved run")
+                       help="Retry failed/missing Ollama responses for a saved run")
 
     scope = ap.add_argument_group("crawl scope")
     scope.add_argument("--depth", type=int, default=2, metavar="N",
@@ -318,13 +318,15 @@ def _build_parser() -> argparse.ArgumentParser:
     hunt.add_argument("--hunt-max", type=int, default=50, metavar="N",
                       help="Maximum lead URLs per page (default: 50)")
 
-    models = ap.add_argument_group("models (ollama)")
+    models = ap.add_argument_group("local llm (optional, off unless --ollama is given)")
     models.add_argument("--model", default="osint-tuned-v3:latest", metavar="NAME",
                         help="Analysis model (default: osint-tuned-v3:latest)")
     models.add_argument("--embed-model", default="bge-m3:latest", metavar="NAME",
                         help="Embeddings model (default: bge-m3:latest)")
-    models.add_argument("--no-ollama", action="store_true",
-                        help="Disable LLM analysis and embeddings")
+    models.add_argument("--ollama", action="store_true",
+                        help="Enable local Ollama analysis and embeddings")
+    # Retained so older command lines keep working; Ollama is already off by default.
+    models.add_argument("--no-ollama", action="store_true", help=argparse.SUPPRESS)
     models.add_argument("--prompt-profile", default=STANDARD, choices=sorted(PAGE_PROFILES),
                         metavar="LENS",
                         help=f"Page analysis lens: {' | '.join(sorted(PAGE_PROFILES))} "
@@ -334,9 +336,9 @@ def _build_parser() -> argparse.ArgumentParser:
     analysis.add_argument("--no-analysis", action="store_true",
                           help="Skip post-crawl analysis (crawl and report only)")
     analysis.add_argument("--deep", action="store_true",
-                          help="Add a model-assisted run-level analysis pass")
+                          help="Add a model-assisted run-level pass (needs --ollama)")
     analysis.add_argument("--cross-check", default="", metavar="MODELS",
-                          help="Comma-separated extra models to cross-check claims")
+                          help="Extra models to cross-check claims (needs --ollama)")
     analysis.add_argument("--evaluate", action="store_true",
                           help="Score analysis against the investigative rubric")
     analysis.add_argument("--training-export", action="store_true",
@@ -346,7 +348,7 @@ def _build_parser() -> argparse.ArgumentParser:
     analysis.add_argument("--leads-per-kind", type=int, default=10, metavar="N",
                           help="Entities per kind expanded into pivot leads (default: 10)")
     analysis.add_argument("--experimental-recursive", type=int, default=0, metavar="N",
-                          help="EXPERIMENTAL: extra deep-analysis passes, 0-3 (default: 0)")
+                          help="EXPERIMENTAL: extra --deep passes, 0-3 (default: 0)")
 
     retry = ap.add_argument_group("model retry (with --retry-model)")
     retry.add_argument("--retry-limit", type=int, default=20, metavar="N",
@@ -384,6 +386,13 @@ def _main():
         setattr(args, dest, value)
         profile_applied.append(f"{dest}={value}")
 
+    if args.ollama and args.no_ollama:
+        ap.error("--ollama and --no-ollama are mutually exclusive")
+    # Ollama runs only when the operator selects it; it is never enabled implicitly.
+    args.no_ollama = not args.ollama
+    if args.no_ollama and (args.deep or args.cross_check or args.experimental_recursive):
+        ap.error("--deep, --cross-check and --experimental-recursive require --ollama")
+
     if not 0 <= args.experimental_recursive <= 3:
         ap.error("--experimental-recursive must be between 0 and 3")
     if args.gap_days < 1:
@@ -410,8 +419,9 @@ def _main():
     if args.max_per_host < 0:
         ap.error("--max-per-host must be nonnegative")
     if args.retry_model:
-        if args.analyze_only or args.no_ollama:
-            ap.error("--retry-model requires Ollama and cannot be combined with --analyze-only")
+        # --retry-model is itself an explicit request to use the local Ollama server.
+        if args.analyze_only:
+            ap.error("--retry-model cannot be combined with --analyze-only")
         from .model_retry import retry_saved
         try:
             saved_id = _validate_run_id(args.retry_model)
